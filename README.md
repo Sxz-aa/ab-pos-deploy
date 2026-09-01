@@ -101,21 +101,6 @@ curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.
 
 This starts Geth with full synchronization and archive state retention. It does not start a validator client unless `--validator` is also specified.
 
-### 3.4 Combine validator and archive modes
-
-To run the validator client and retain archive execution state on the same node, combine both flags:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet lighthouse geth \
-  --validator \
-  --archive \
-  --validator-count 1000 \
-  --withdrawal-address 0x0000000000000000000000000000000000000000 \
-  --fee-recipient 0x0000000000000000000000000000000000000000
-```
-
-This combined mode has the archive node's additional storage and IOPS requirements.
-
 ## 4. Node operations
 
 Use the same network and consensus client that were selected during installation.
