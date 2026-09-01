@@ -1,71 +1,120 @@
 #!/usr/bin/env bash
+set -Eeuo pipefail
 
-set -euo pipefail
-
-readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly build_dir="${BUILD_DIR:-${root_dir}/build}"
 
 function fail() {
     printf 'ERROR: %s\n' "$*" >&2
     exit 1
 }
 
-function validate_network_files() {
-    local target_chain="$1"
-    local target_network="$2"
-    local share_dir="${script_dir}/${target_chain}/${target_network}/share"
-    local file
-    local required_files=(
-        genesis.json
-        genesis.ssz
-        jwtsecret
-        config.yaml
-        config.prysm.yaml
-    )
+function usage() {
+    cat <<'USAGE'
+Usage:
+  ./build.sh --check NETWORK RELEASE_PHASE
+  ./build.sh VERSION NETWORK RELEASE_PHASE
 
-    [[ -d "${share_dir}" ]] || fail "Network share directory not found: ${share_dir}"
+RELEASE_PHASE must be genesis or post-genesis.
+USAGE
+}
 
-    for file in "${required_files[@]}"; do
-        [[ -s "${share_dir}/${file}" ]] || fail "Missing required network file: ${share_dir}/${file}"
+function effective_lines() {
+    sed -e 's/\r$//' -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*#/d' "$1"
+}
+
+function require_command() {
+    command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+function validate_line_file() {
+    local path="$1"
+    local label="$2"
+    local pattern="$3"
+    local line
+
+    [[ -f "${path}" ]] || return 0
+    while IFS= read -r line; do
+        [[ "${line}" =~ ${pattern} ]] || fail "invalid ${label} entry in ${path}: ${line}"
+    done < <(effective_lines "${path}")
+}
+
+function validate_network() {
+    local target_network="$1"
+    local target_phase="$2"
+    local target_share_dir="${root_dir}/abpos/${target_network}/share"
+    local required_file
+    local jwt
+
+    [[ "${target_network}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid network name: ${target_network}"
+    case "${target_phase}" in
+        genesis|post-genesis) ;;
+        *) fail "RELEASE_PHASE must be genesis or post-genesis; got: ${target_phase}" ;;
+    esac
+
+    [[ -d "${target_share_dir}" ]] || fail "network share directory not found: ${target_share_dir}"
+    for required_file in genesis.json genesis.ssz jwtsecret config.yaml config.prysm.yaml; do
+        [[ -s "${target_share_dir}/${required_file}" ]] || fail "required network file is missing or empty: ${target_share_dir}/${required_file}"
     done
 
-    if [[ ! -s "${share_dir}/checkpoint_sync_urls.txt" ]]; then
+    require_command jq
+    jq -e 'type == "object" and (.config.chainId | type == "number")' \
+        "${target_share_dir}/genesis.json" >/dev/null \
+        || fail "genesis.json is invalid or config.chainId is not numeric"
+
+    jwt="$(tr -d '[:space:]' < "${target_share_dir}/jwtsecret")"
+    [[ "${jwt}" =~ ^(0x)?[0-9a-fA-F]{64}$ ]] \
+        || fail "jwtsecret must contain exactly 32 bytes encoded as 64 hexadecimal characters, optionally prefixed by 0x"
+
+    validate_line_file "${target_share_dir}/bootstrap_nodes.txt" "beacon bootstrap node" '^enr:[^[:space:]]+$'
+    validate_line_file "${target_share_dir}/enodes.txt" "Geth enode" '^enode://[^[:space:]]+$'
+    validate_line_file "${target_share_dir}/checkpoint_sync_urls.txt" "checkpoint URL" '^https?://[^[:space:]]+$'
+
+    for required_file in deploy_block.txt deposit_contract_block.txt; do
+        if [[ -f "${target_share_dir}/${required_file}" ]]; then
+            [[ "$(tr -d '[:space:]' < "${target_share_dir}/${required_file}")" =~ ^[0-9]+$ ]] \
+                || fail "${required_file} must contain one non-negative block number"
+        fi
+    done
+
+    if [[ "${target_phase}" == "post-genesis" ]]; then
+        [[ -s "${target_share_dir}/checkpoint_sync_urls.txt" ]] \
+            || fail "post-genesis releases require checkpoint_sync_urls.txt"
+        [[ -n "$(effective_lines "${target_share_dir}/checkpoint_sync_urls.txt")" ]] \
+            || fail "checkpoint_sync_urls.txt has no usable checkpoint URL"
+    elif [[ ! -s "${target_share_dir}/checkpoint_sync_urls.txt" ]]; then
         printf '%s\n' \
-            "WARNING: checkpoint_sync_urls.txt is absent; this artifact is suitable for genesis startup, but the default post-genesis command will require --checkpoint-url."
+            "INFO: checkpoint_sync_urls.txt is absent. This is valid for a genesis release;" \
+            "      non-genesis nodes must use --checkpoint-url until a post-genesis release is published."
     fi
+
+    printf 'Validated %s network files for the %s release phase.\n' "${target_network}" "${target_phase}"
 }
 
 if [[ "${1:-}" == "--check" ]]; then
-    [[ "$#" -eq 3 ]] || fail "Usage: $0 --check <chain> <network>"
-    validate_network_files "$2" "$3"
+    [[ "$#" -eq 3 ]] || { usage >&2; exit 2; }
+    validate_network "$2" "$3"
     exit 0
 fi
 
-[[ "$#" -eq 3 ]] || fail "Usage: $0 <version> <chain> <network>"
-
+[[ "$#" -eq 3 ]] || { usage >&2; exit 2; }
 readonly version="$1"
-readonly chain="$2"
-readonly network="$3"
-readonly build_dir="${script_dir}/build"
-readonly archive_name="${chain}-${network}-${version}.tar.gz"
-readonly archive_path="${build_dir}/${archive_name}"
+readonly network="$2"
+readonly release_phase="$3"
+readonly share_dir="${root_dir}/abpos/${network}/share"
+readonly artifact="${build_dir}/abpos-${network}-${version}.tar.gz"
 
-[[ "${version}" =~ ^[A-Za-z0-9._+-]+$ ]] || fail "Invalid version: ${version}"
-[[ "${chain}" =~ ^[a-z0-9-]+$ ]] || fail "Invalid chain: ${chain}"
-[[ "${network}" =~ ^[a-z0-9-]+$ ]] || fail "Invalid network: ${network}"
+[[ "${version}" =~ ^[A-Za-z0-9._+-]+$ ]] || fail "invalid VERSION: ${version}"
+validate_network "${network}" "${release_phase}"
+require_command tar
+require_command sha256sum
 
-validate_network_files "${chain}" "${network}"
 mkdir -p "${build_dir}"
-
-printf 'Building %s %s network artifact, version %s...\n' \
-    "${chain}" "${network}" "${version}"
-
-tar -czf "${archive_path}" -C "${script_dir}" "${chain}/${network}"
-
+tar -C "${share_dir}" -czf "${artifact}" .
 (
     cd "${build_dir}"
-    sha256sum "${archive_name}" >"${archive_name}.sha256"
-    sha256sum --check "${archive_name}.sha256"
+    sha256sum "$(basename "${artifact}")" > "$(basename "${artifact}").sha256"
 )
 
-printf 'Built: %s\n' "${archive_path}"
-printf 'Checksum: %s.sha256\n' "${archive_path}"
+printf 'Created %s\n' "${artifact}"
+printf 'Created %s.sha256\n' "${artifact}"

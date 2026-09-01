@@ -1,24 +1,55 @@
-SHELL := /bin/bash
+SHELL := /usr/bin/env bash
 
-CHAIN := abpos
-NETWORKS := testnet
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || date +%Y%m%d%H%M%S)
+ROOT_DIR := $(CURDIR)
+BUILD_DIR := $(ROOT_DIR)/build
+NETWORK ?= testnet
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || printf 'dev')
+RELEASE_PHASE ?= genesis
 
-.PHONY: all $(NETWORKS) build clean check
+GETH_REPOSITORY ?= https://github.com/ethereum/go-ethereum.git
+GETH_VERSION ?= v1.17.5
+AB_GETH_VERSION ?= $(GETH_VERSION)-ab.1
+GETH_IMAGE ?= ghcr.io/abdaodev/ab-geth
+GETH_PLATFORM ?= linux/amd64
+GETH_ARCH := $(word 2,$(subst /, ,$(GETH_PLATFORM)))
+GETH_ARTIFACT := $(BUILD_DIR)/ab-geth-$(AB_GETH_VERSION)-linux-$(GETH_ARCH)
+GETH_PATCHES := $(wildcard patches/go-ethereum/*.patch)
 
-all: $(NETWORKS)
+export ROOT_DIR BUILD_DIR NETWORK VERSION RELEASE_PHASE
+export GETH_REPOSITORY GETH_VERSION AB_GETH_VERSION GETH_IMAGE GETH_PLATFORM
 
-$(NETWORKS):
-	@./build.sh "$(VERSION)" "$(CHAIN)" "$@"
+.PHONY: all network testnet check geth geth-version docker push-docker clean
 
-build:
-	@[ -n "$(NETWORK)" ] || { echo "NETWORK is required" >&2; exit 1; }
-	@./build.sh "$(VERSION)" "$(CHAIN)" "$(NETWORK)"
+all: network geth docker
+
+network: $(NETWORK)
+
+testnet: check
+	./build.sh "$(VERSION)" testnet "$(RELEASE_PHASE)"
 
 check:
-	@for network in $(NETWORKS); do \
-		./build.sh --check "$(CHAIN)" "$$network"; \
-	done
+	./build.sh --check "$(NETWORK)" "$(RELEASE_PHASE)"
+	@test -x scripts/prepare-geth-source.sh || { echo "ERROR: scripts/prepare-geth-source.sh is missing or not executable." >&2; exit 1; }
+	@test -x scripts/build-geth.sh || { echo "ERROR: scripts/build-geth.sh is missing or not executable." >&2; exit 1; }
+	@test -x scripts/build-geth-docker.sh || { echo "ERROR: scripts/build-geth-docker.sh is missing or not executable." >&2; exit 1; }
+	@test -f docker/geth/Dockerfile || { echo "ERROR: docker/geth/Dockerfile is missing." >&2; exit 1; }
+	@compgen -G 'patches/go-ethereum/*.patch' >/dev/null || { echo "ERROR: no Geth patches found under patches/go-ethereum/." >&2; exit 1; }
+
+geth: $(GETH_ARTIFACT)
+
+$(GETH_ARTIFACT): scripts/prepare-geth-source.sh scripts/build-geth.sh docker/geth/Dockerfile $(GETH_PATCHES)
+	./scripts/build-geth.sh
+
+geth-version:
+	@printf '%s\n' "$(AB_GETH_VERSION)"
+
+docker: geth docker/geth/Runtime.Dockerfile scripts/build-geth-docker.sh
+	./scripts/build-geth-docker.sh
+
+push-docker: docker
+	docker push "$(GETH_IMAGE):$(AB_GETH_VERSION)"
+	docker push "$(GETH_IMAGE):latest"
 
 clean:
-	rm -rf -- build
+	@case "$(BUILD_DIR)" in "$(ROOT_DIR)/build") ;; *) echo "ERROR: refusing to clean unexpected path: $(BUILD_DIR)" >&2; exit 1;; esac
+	rm -rf -- "$(BUILD_DIR)"

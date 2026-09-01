@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly root_dir="${ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+readonly build_dir="${BUILD_DIR:-${root_dir}/build}"
+readonly geth_version="${GETH_VERSION:-v1.17.5}"
+readonly ab_geth_version="${AB_GETH_VERSION:-${geth_version}-ab.1}"
+readonly geth_image="${GETH_IMAGE:-ghcr.io/abdaodev/ab-geth}"
+readonly geth_platform="${GETH_PLATFORM:-linux/amd64}"
+readonly platform_arch="${geth_platform#*/}"
+readonly binary="${build_dir}/ab-geth-${ab_geth_version}-linux-${platform_arch}"
+readonly archive_name="ab-geth-${ab_geth_version}-linux-${platform_arch}.docker.tar.gz"
+readonly archive="${build_dir}/${archive_name}"
+readonly context_dir="${build_dir}/.geth-runtime-context"
+
+function fail() {
+    printf 'ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+command -v docker >/dev/null 2>&1 || fail "Docker Engine is required to build the ab-geth image"
+command -v gzip >/dev/null 2>&1 || fail "gzip is required"
+command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
+
+[[ -x "${binary}" ]] || fail "patched geth binary not found: ${binary}; run make geth"
+mkdir -p "${build_dir}"
+rm -rf -- "${context_dir}"
+mkdir -p "${context_dir}"
+trap 'rm -rf -- "${context_dir}"' EXIT
+install -m 0755 "${binary}" "${context_dir}/geth"
+
+printf 'Building Docker image %s:%s for %s\n' "${geth_image}" "${ab_geth_version}" "${geth_platform}"
+DOCKER_BUILDKIT=0 docker build \
+    --platform "${geth_platform}" \
+    --build-arg "AB_GETH_VERSION=${ab_geth_version}" \
+    -t "${geth_image}:${ab_geth_version}" \
+    -t "${geth_image}:latest" \
+    -f "${root_dir}/docker/geth/Runtime.Dockerfile" \
+    "${context_dir}"
+
+printf 'Saving Docker image to %s\n' "${archive}"
+docker save "${geth_image}:${ab_geth_version}" "${geth_image}:latest" | gzip -n > "${archive}"
+(
+    cd "${build_dir}"
+    sha256sum "${archive_name}" > "${archive_name}.sha256"
+)
+
+printf 'Created %s\n' "${archive}"
+printf 'Created %s.sha256\n' "${archive}"

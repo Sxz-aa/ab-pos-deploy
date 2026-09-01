@@ -1,4 +1,4 @@
-name: Network Release
+name: Build and publish AB PoS release
 
 on:
   push:
@@ -7,20 +7,45 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out the repository
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Build network artifacts
-        run: make VERSION="${GITHUB_REF_NAME}"
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload network artifacts to the GitHub Release
+      - name: Build network and AB Geth artifacts
+        env:
+          GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
+        run: |
+          if [[ -s abpos/testnet/share/checkpoint_sync_urls.txt ]]; then
+            release_phase=post-genesis
+          else
+            release_phase=genesis
+          fi
+          make VERSION="${GITHUB_REF_NAME}" RELEASE_PHASE="${release_phase}"
+
+      - name: Push AB Geth image
+        env:
+          GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
+        run: |
+          ab_geth_version="$(make -s geth-version)"
+          docker push "${GETH_IMAGE}:${ab_geth_version}"
+          docker push "${GETH_IMAGE}:latest"
+
+      - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
             build/abpos-*.tar.gz
             build/abpos-*.tar.gz.sha256
+            build/ab-geth-*

@@ -1,0 +1,28 @@
+From ea9aaa5c9fef806e340a99ea89caba1a8d93426f Mon Sep 17 00:00:00 2001
+From: jack <infinityjack@pm.me>
+Date: Mon, 29 Jun 2026 16:04:39 +0800
+Subject: [PATCH] consensus/beacon: scale withdrawal credits by 1000 gwei
+
+---
+ consensus/beacon/consensus.go | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/consensus/beacon/consensus.go b/consensus/beacon/consensus.go
+index 4237418e7..26591fb34 100644
+--- a/consensus/beacon/consensus.go
++++ b/consensus/beacon/consensus.go
+@@ -350,9 +350,9 @@ func (beacon *Beacon) Finalize(chain consensus.ChainHeaderReader, header *types.
+ 	}
+ 	// Withdrawals processing.
+ 	for _, w := range body.Withdrawals {
+-		// Convert amount from gwei to wei.
++		// Convert amount from 1000 gwei to wei.
+ 		amount := new(uint256.Int).SetUint64(w.Amount)
+-		amount = amount.Mul(amount, uint256.NewInt(params.GWei))
++		amount = amount.Mul(amount, uint256.NewInt(1000 * params.GWei))
+ 		prev := state.AddBalance(w.Address, amount, tracing.BalanceIncreaseWithdrawal)
+ 
+ 		// Populate the block-level accessList if Amsterdam is enabled
+-- 
+2.50.1 (Apple Git-155)
+
