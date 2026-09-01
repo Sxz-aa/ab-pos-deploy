@@ -106,7 +106,7 @@ Lighthouse uses the same options:
   --fee-recipient 0x0000000000000000000000000000000000000000
 ```
 
-Replace every example address and IP before running either command.
+Replace every example address before running either command.
 
 The default key locations are:
 

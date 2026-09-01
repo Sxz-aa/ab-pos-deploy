@@ -82,7 +82,7 @@ Examples:
 
   ./ab-pos.sh testnet prysm geth \
     --genesis --validator \
-    --fee-recipient 0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332 \
+    --fee-recipient 0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   ./ab-pos.sh testnet lighthouse geth \
     --validator \
