@@ -18,7 +18,7 @@ This repository provides the public Docker deployment entry point for joining an
 - Processor: 2 CPU cores or more
 - Memory: 16 GB RAM or more
 - Storage: 200 GB or more on an SSD
-- Network: A stable internet connection and a public IP address for public P2P participation
+- Network: A stable internet connection
 
 Archive nodes require substantially more storage, IOPS, and synchronization time.
 
@@ -27,69 +27,39 @@ Archive nodes require substantially more storage, IOPS, and synchronization time
 - Docker Engine
 - jq
 
-Docker must be running and accessible to the current user:
-
-```bash
-docker info
-```
-
-The default data root is `/data/abpos`. Prepare it once and give the current user ownership:
-
-```bash
-sudo mkdir -p /data/abpos
-sudo chown "$(id -u):$(id -g)" /data/abpos
-```
-
-This setup is the only command in this guide that normally needs `sudo`. To avoid it entirely, select a user-writable location when deploying:
-
-```bash
-./ab-pos.sh testnet prysm geth --root-dir "$PWD/abpos-data"
-```
-
-## 3. Install the deployment script
-
-```bash
-mkdir -p ab-pos && cd ab-pos
-
-curl -fLO https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh
-chmod +x ab-pos.sh
-```
-
-The installer downloads the selected network archive from the latest GitHub Release in `abdaodev/ab-pos-deploy`. Override the source with `--release-repo`, `--release`, or `--release-url` when required.
-
-## 4. Deploy a node
+## 3. Deploy a node
 
 Every deployment runs Geth and one beacon node. Validator and archive behavior are optional additions to the same node, so `--validator` and `--archive` may be used separately or together.
 
-### 4.1 RPC node
+### 3.1 RPC node
 
 Deploy Geth with Prysm:
 
 ```bash
-./ab-pos.sh testnet prysm geth
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth
 ```
 
 Deploy Geth with Lighthouse:
 
 ```bash
-./ab-pos.sh testnet lighthouse geth
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet lighthouse geth
 ```
 
 The default command reads its trusted checkpoint provider from `checkpoint_sync_urls.txt` in the selected network Release. To use an explicitly selected provider:
 
 ```bash
-./ab-pos.sh testnet prysm geth \
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth \
   --checkpoint-url https://checkpoint.example.org
 ```
 
 Verify the checkpoint provider through an independent trusted channel before using it.
 
-### 4.2 Add validator duties
+### 3.2 Add validator duties
 
 A validator deployment creates a new mnemonic, password, keystores, and deposit data when its validator key directory is empty.
 
 ```bash
-./ab-pos.sh testnet prysm geth \
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth \
   --validator \
   --validator-count 1000 \
   --withdrawal-address 0x0000000000000000000000000000000000000000 \
@@ -99,7 +69,7 @@ A validator deployment creates a new mnemonic, password, keystores, and deposit 
 Lighthouse uses the same options:
 
 ```bash
-./ab-pos.sh testnet lighthouse geth \
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet lighthouse geth \
   --validator \
   --validator-count 1000 \
   --withdrawal-address 0x0000000000000000000000000000000000000000 \
@@ -123,20 +93,20 @@ Generating keys and starting a validator client does not complete the staking pr
 
 Back up the mnemonic, password, keystores, and slashing protection data. Never run the same validator keys in more than one validator client at the same time.
 
-### 4.3 Add archive storage
+### 3.3 Add archive storage
 
 ```bash
-./ab-pos.sh testnet lighthouse geth --archive
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet lighthouse geth --archive
 ```
 
 This starts Geth with full synchronization and archive state retention. It does not start a validator client unless `--validator` is also specified.
 
-### 4.4 Combine validator and archive modes
+### 3.4 Combine validator and archive modes
 
 To run the validator client and retain archive execution state on the same node, combine both flags:
 
 ```bash
-./ab-pos.sh testnet lighthouse geth \
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet lighthouse geth \
   --validator \
   --archive \
   --validator-count 1000 \
@@ -146,34 +116,32 @@ To run the validator client and retain archive execution state on the same node,
 
 This combined mode has the archive node's additional storage and IOPS requirements.
 
-## 5. Node operations
+## 4. Node operations
 
 Use the same network and consensus client that were selected during installation.
 
 Show container and synchronization status:
 
 ```bash
-./ab-pos.sh testnet prysm geth --status
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --status
 ```
 
 Follow logs:
 
 ```bash
-./ab-pos.sh testnet prysm geth --logs geth
-./ab-pos.sh testnet prysm geth --logs beacon
-./ab-pos.sh testnet prysm geth --logs validator
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --logs geth
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --logs beacon
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --logs validator
 ```
 
 Stop or restart the node:
 
 ```bash
-./ab-pos.sh testnet prysm geth --stop
-./ab-pos.sh testnet prysm geth --restart
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --stop
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --restart
 ```
 
-Run `./ab-pos.sh --help` for the complete option reference.
-
-## 6. Network ports
+## 5. Network ports
 
 | Service | Bind address | Port | Protocol | Notes |
 | --- | --- | ---: | --- | --- |
@@ -187,7 +155,7 @@ Run `./ab-pos.sh --help` for the complete option reference.
 
 Allow the public P2P ports through the host firewall. Keep loopback-only APIs private unless an authenticated access-control layer protects them.
 
-## 7. Current limitations
+## 6. Current limitations
 
 The first version of `ab-pos.sh` has the following known boundaries:
 
