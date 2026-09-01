@@ -1,0 +1,130 @@
+# AB PoS Build and Release Guide
+
+This document is for repository maintainers who build Network Release assets and the patched AB Geth execution client.
+
+## Versioning
+
+The repository uses one Network Release tag, such as `v1.2.3`. The tagged source tree pins the execution-client inputs in the `Makefile`:
+
+```make
+GETH_VERSION ?= v1.17.5
+AB_GETH_VERSION ?= $(GETH_VERSION)-ab.1
+```
+
+`GETH_VERSION` must be an official upstream `vMAJOR.MINOR.PATCH` tag. `AB_GETH_VERSION` adds a positive AB patch revision.
+
+When upstream Geth changes, update `GETH_VERSION` and reset the AB revision to `ab.1`:
+
+```text
+v1.17.5-ab.2 -> v1.17.6-ab.1
+```
+
+When the AB patches or relevant build inputs change without an upstream version change, increment the AB revision:
+
+```text
+v1.17.6-ab.1 -> v1.17.6-ab.2
+```
+
+Never reuse an AB Geth version for different build inputs.
+
+## Local builds
+
+Validate the network files and build scripts:
+
+```bash
+make check
+```
+
+Build the selected network archive:
+
+```bash
+make network VERSION=v1.2.3 RELEASE_PHASE=genesis
+```
+
+Use `RELEASE_PHASE=post-genesis` after a trusted checkpoint provider has been published. That mode requires a valid `checkpoint_sync_urls.txt`.
+
+Build the patched static Geth binary:
+
+```bash
+make geth
+```
+
+Every patch under `patches/go-ethereum/` must pass `git apply --check` against the pinned upstream tag. A failed check stops the build without fuzzy or partial application.
+
+Build the exact-version runtime image and Docker archive:
+
+```bash
+make docker
+```
+
+`make docker` creates only the exact local image tag:
+
+```text
+ghcr.io/abdaodev/ab-geth:v1.17.5-ab.1
+```
+
+It does not move `latest`. Remove generated files under this repository's `build/` directory with:
+
+```bash
+make clean
+```
+
+Running `make` without a target builds the network archive, patched binary, and Docker archive.
+
+## Release assets
+
+Every Network Release is self-contained and contains:
+
+```text
+abpos-testnet-v1.2.3.tar.gz
+abpos-testnet-v1.2.3.tar.gz.sha256
+ab-geth-v1.17.5-ab.1-linux-amd64
+ab-geth-v1.17.5-ab.1-linux-amd64.sha256
+ab-geth-v1.17.5-ab.1-linux-amd64.build-info.txt
+ab-geth-v1.17.5-ab.1-linux-amd64.docker.tar.gz
+ab-geth-v1.17.5-ab.1-linux-amd64.docker.tar.gz.sha256
+```
+
+Two Network Releases may contain the same AB Geth binary when the execution-client version has not changed.
+
+## GitHub tag workflow
+
+Push a signed Network Release tag to GitHub:
+
+```bash
+git tag -s v1.2.3 -m "AB PoS testnet v1.2.3"
+git push <github-remote> v1.2.3
+```
+
+The workflow performs the following operations:
+
+1. Validates and packages the network files.
+2. Checks whether `ghcr.io/abdaodev/ab-geth:<AB_GETH_VERSION>` already exists.
+3. Builds and pushes the exact image only when it does not exist.
+4. Otherwise, pulls the exact image and extracts `/usr/local/bin/geth` without recompiling or overwriting the image.
+5. Produces the binary checksum, build information, Docker archive, and Docker-archive checksum.
+6. Compares the candidate AB Geth version with the version label on `latest`.
+7. Moves `latest` only when the candidate version is newer.
+8. Publishes all files in one GitHub Network Release.
+
+Release jobs use one concurrency group so that two tags cannot update `latest` simultaneously.
+
+## Image immutability
+
+New images contain a build fingerprint derived from the pinned upstream version, target platform, patches, Dockerfiles, and relevant build scripts. When an exact image tag already exists:
+
+- A matching fingerprint permits reuse.
+- A different fingerprint fails the Release and requires a new AB revision.
+- An older image without a fingerprint may be reused only when its exact version label matches; the workflow prints a compatibility warning.
+
+The workflow protects exact tags from accidental replacement. Registry administrators can still mutate tags manually, so production verification may additionally pin an image digest.
+
+## Manual publication
+
+The same guarded publication path is available locally after GHCR authentication:
+
+```bash
+make push-docker
+```
+
+It prepares or reuses the exact image and applies the same version-aware `latest` update. It does not publish a GitHub Release; GitHub Releases are created by the signed Network tag workflow.

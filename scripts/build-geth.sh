@@ -12,6 +12,7 @@ readonly artifact_name="ab-geth-${ab_geth_version}-linux-${platform_arch}"
 readonly artifact="${build_dir}/${artifact_name}"
 readonly export_dir="${build_dir}/.geth-binary-export"
 readonly temporary_image="ab-geth-build:${ab_geth_version}"
+readonly build_fingerprint="$("${root_dir}/scripts/geth-build-fingerprint.sh")"
 container_id=""
 
 function fail() {
@@ -71,6 +72,7 @@ install -m 0755 "${export_dir}/geth" "${artifact}"
     printf 'upstream_version=%s\n' "${geth_version}"
     printf 'upstream_commit=%s\n' "$(git -C "${source_dir}" rev-parse HEAD)"
     printf 'platform=%s\n' "${geth_platform}"
+    printf 'build_fingerprint=%s\n' "${build_fingerprint}"
     printf 'patches=\n'
     (
         cd "${root_dir}"

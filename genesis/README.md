@@ -276,43 +276,7 @@ git tag -s v1.0.0 -m "AB PoS testnet v1.0.0"
 git push <github-remote> v1.0.0
 ```
 
-Pushing a `v*` tag runs the GitHub Release workflow and uploads the archives and checksums produced by `make`. The tag must reach GitHub; pushing it only to a GitLab remote does not run the workflow under `.github/workflows/`.
-
-### 7.3 Build the patched execution client
-
-The default build pins the current upstream go-ethereum release and applies every patch under `patches/go-ethereum/`:
-
-```bash
-make geth
-```
-
-The current defaults are:
-
-```text
-GETH_VERSION=v1.17.5
-AB_GETH_VERSION=v1.17.5-ab.1
-GETH_PLATFORM=linux/amd64
-```
-
-The build starts from the exact official tag in a generated checkout under `build/src/`. Before applying each patch, it runs `git apply --check`. If the check fails, the build prints the patch path, upstream version, and original Git error, then exits without attempting a fuzzy or partial application.
-
-Outputs include the static binary, SHA256 checksum, and build metadata:
-
-```text
-build/ab-geth-v1.17.5-ab.1-linux-amd64
-build/ab-geth-v1.17.5-ab.1-linux-amd64.sha256
-build/ab-geth-v1.17.5-ab.1-linux-amd64.build-info.txt
-```
-
-Build and save the runtime image as a GitHub Release asset:
-
-```bash
-make docker
-```
-
-This tags `ghcr.io/abdaodev/ab-geth:v1.17.5-ab.1` and `ghcr.io/abdaodev/ab-geth:latest`, then writes a compressed Docker archive and checksum under `build/`. `make` builds the network archive, patched binary, and Docker archive together. `make clean` removes only this repository's generated `build/` directory; it does not remove published files or local Docker images.
-
-The tag workflow uploads all generated artifacts to GitHub Release and pushes both image tags to GitHub Container Registry. Consensus-client compilation is intentionally outside the current build scope.
+Pushing a `v*` tag runs the GitHub Release workflow and publishes the files required by that Network Release. The tag must reach GitHub; pushing it only to a GitLab remote does not run the workflow under `.github/workflows/`.
 
 ## 8. Start genesis nodes after publication
 

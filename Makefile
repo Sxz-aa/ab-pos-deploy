@@ -32,12 +32,16 @@ check:
 	@test -x scripts/prepare-geth-source.sh || { echo "ERROR: scripts/prepare-geth-source.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/build-geth.sh || { echo "ERROR: scripts/build-geth.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/build-geth-docker.sh || { echo "ERROR: scripts/build-geth-docker.sh is missing or not executable." >&2; exit 1; }
+	@test -x scripts/geth-build-fingerprint.sh || { echo "ERROR: scripts/geth-build-fingerprint.sh is missing or not executable." >&2; exit 1; }
+	@test -x scripts/export-geth-image.sh || { echo "ERROR: scripts/export-geth-image.sh is missing or not executable." >&2; exit 1; }
+	@test -x scripts/prepare-geth-release.sh || { echo "ERROR: scripts/prepare-geth-release.sh is missing or not executable." >&2; exit 1; }
+	@test -x scripts/update-geth-latest.sh || { echo "ERROR: scripts/update-geth-latest.sh is missing or not executable." >&2; exit 1; }
 	@test -f docker/geth/Dockerfile || { echo "ERROR: docker/geth/Dockerfile is missing." >&2; exit 1; }
 	@compgen -G 'patches/go-ethereum/*.patch' >/dev/null || { echo "ERROR: no Geth patches found under patches/go-ethereum/." >&2; exit 1; }
 
 geth: $(GETH_ARTIFACT)
 
-$(GETH_ARTIFACT): scripts/prepare-geth-source.sh scripts/build-geth.sh docker/geth/Dockerfile $(GETH_PATCHES)
+$(GETH_ARTIFACT): scripts/prepare-geth-source.sh scripts/build-geth.sh scripts/geth-build-fingerprint.sh docker/geth/Dockerfile docker/geth/Runtime.Dockerfile $(GETH_PATCHES)
 	./scripts/build-geth.sh
 
 geth-version:
@@ -46,9 +50,9 @@ geth-version:
 docker: geth docker/geth/Runtime.Dockerfile scripts/build-geth-docker.sh
 	./scripts/build-geth-docker.sh
 
-push-docker: docker
-	docker push "$(GETH_IMAGE):$(AB_GETH_VERSION)"
-	docker push "$(GETH_IMAGE):latest"
+push-docker:
+	./scripts/prepare-geth-release.sh
+	./scripts/update-geth-latest.sh
 
 clean:
 	@case "$(BUILD_DIR)" in "$(ROOT_DIR)/build") ;; *) echo "ERROR: refusing to clean unexpected path: $(BUILD_DIR)" >&2; exit 1;; esac

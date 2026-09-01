@@ -12,6 +12,7 @@ readonly binary="${build_dir}/ab-geth-${ab_geth_version}-linux-${platform_arch}"
 readonly archive_name="ab-geth-${ab_geth_version}-linux-${platform_arch}.docker.tar.gz"
 readonly archive="${build_dir}/${archive_name}"
 readonly context_dir="${build_dir}/.geth-runtime-context"
+readonly build_fingerprint="$("${root_dir}/scripts/geth-build-fingerprint.sh")"
 
 function fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -33,13 +34,13 @@ printf 'Building Docker image %s:%s for %s\n' "${geth_image}" "${ab_geth_version
 DOCKER_BUILDKIT=0 docker build \
     --platform "${geth_platform}" \
     --build-arg "AB_GETH_VERSION=${ab_geth_version}" \
+    --build-arg "AB_GETH_BUILD_FINGERPRINT=${build_fingerprint}" \
     -t "${geth_image}:${ab_geth_version}" \
-    -t "${geth_image}:latest" \
     -f "${root_dir}/docker/geth/Runtime.Dockerfile" \
     "${context_dir}"
 
 printf 'Saving Docker image to %s\n' "${archive}"
-docker save "${geth_image}:${ab_geth_version}" "${geth_image}:latest" | gzip -n > "${archive}"
+docker save "${geth_image}:${ab_geth_version}" | gzip -n > "${archive}"
 (
     cd "${build_dir}"
     sha256sum "${archive_name}" > "${archive_name}.sha256"

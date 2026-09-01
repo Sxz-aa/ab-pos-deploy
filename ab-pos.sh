@@ -7,7 +7,7 @@ set -euo pipefail
 readonly script_version="0.1.0"
 readonly default_release_repo="${ABPOS_RELEASE_REPO:-abdaodev/ab-pos-deploy}"
 readonly default_root_dir="${ABPOS_ROOT_DIR:-/data/abpos}"
-readonly default_geth_image="${GETH_DOCKER_IMAGE:-ghcr.io/abdaodev/ab-geth:latest}"
+readonly geth_image_override="${GETH_DOCKER_IMAGE:-}"
 readonly default_prysm_beacon_image="${PRYSM_BEACON_IMAGE:-offchainlabs/prysm-beacon-chain:stable}"
 readonly default_prysm_validator_image="${PRYSM_VALIDATOR_IMAGE:-offchainlabs/prysm-validator:stable}"
 readonly default_lighthouse_image="${LIGHTHOUSE_IMAGE:-sigp/lighthouse:latest}"
@@ -135,6 +135,10 @@ checkpoint_url=""
 release_version="latest"
 release_repo="${default_release_repo}"
 release_url=""
+network_release_url=""
+geth_asset_name=""
+resolved_geth_version=""
+geth_image=""
 root_dir="${default_root_dir}"
 data_dir=""
 keys_dir=""
@@ -305,10 +309,23 @@ mkdir -p "${share_dir}" "${geth_data_dir}" "${beacon_data_dir}" "${validator_dat
 function resolve_release() {
     local api_url="https://api.github.com/repos/${release_repo}/releases"
     local release_json
-    local asset_url
+    local release_owner
+    local network_asset_count
+    local geth_asset_count
+    local geth_checksum_count
+    local platform_arch
+
+    case "$(uname -m)" in
+        x86_64 | amd64) platform_arch="amd64" ;;
+        aarch64 | arm64) platform_arch="arm64" ;;
+        *) fail "Unsupported host architecture: $(uname -m)" ;;
+    esac
 
     if [[ -n "${release_url}" ]]; then
-        printf '%s\n' "${release_url}"
+        [[ -n "${geth_image_override}" ]] \
+            || fail "--release-url requires GETH_DOCKER_IMAGE with an explicit version tag."
+        network_release_url="${release_url}"
+        geth_image="${geth_image_override}"
         return
     fi
 
@@ -318,30 +335,61 @@ function resolve_release() {
         release_json="$(curl -fsSL "${api_url}/tags/${release_version}")" || fail "Unable to query Release ${release_version}."
     fi
 
-    asset_url="$(
-        jq -r --arg network "${network}" '
-            [.assets[] | select(.name | test($network; "i")) | select(.name | endswith(".tar.gz"))][0].browser_download_url // empty
+    network_asset_count="$(
+        jq -r --arg prefix "abpos-${network}-" '
+            [.assets[] | select(.name | startswith($prefix)) | select(.name | endswith(".tar.gz"))] | length
         ' <<<"${release_json}"
     )"
-    [[ -n "${asset_url}" ]] || fail "No ${network} .tar.gz asset was found in the selected Release."
-    printf '%s\n' "${asset_url}"
+    [[ "${network_asset_count}" -eq 1 ]] \
+        || fail "The selected Release must contain exactly one ${network} network archive; found ${network_asset_count}."
+    network_release_url="$(
+        jq -r --arg prefix "abpos-${network}-" '
+            [.assets[] | select(.name | startswith($prefix)) | select(.name | endswith(".tar.gz"))][0].browser_download_url
+        ' <<<"${release_json}"
+    )"
+
+    geth_asset_count="$(
+        jq -r --arg arch "${platform_arch}" '
+            [.assets[] | select(.name | test("^ab-geth-v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*-linux-" + $arch + "$"))] | length
+        ' <<<"${release_json}"
+    )"
+    [[ "${geth_asset_count}" -eq 1 ]] \
+        || fail "The selected Release must contain exactly one AB Geth linux-${platform_arch} binary; found ${geth_asset_count}."
+
+    geth_asset_name="$(
+        jq -r --arg arch "${platform_arch}" '
+            [.assets[] | select(.name | test("^ab-geth-v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*-linux-" + $arch + "$"))][0].name
+        ' <<<"${release_json}"
+    )"
+    geth_checksum_count="$(
+        jq -r --arg name "${geth_asset_name}.sha256" '
+            [.assets[] | select(.name == $name)] | length
+        ' <<<"${release_json}"
+    )"
+    [[ "${geth_checksum_count}" -eq 1 ]] \
+        || fail "The selected Release must contain ${geth_asset_name}.sha256."
+    resolved_geth_version="${geth_asset_name#ab-geth-}"
+    resolved_geth_version="${resolved_geth_version%-linux-${platform_arch}}"
+    [[ "${resolved_geth_version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-ab\.[1-9][0-9]*$ ]] \
+        || fail "Unable to parse the AB Geth version from ${geth_asset_name}."
+
+    release_owner="${release_repo%%/*}"
+    geth_image="${geth_image_override:-ghcr.io/${release_owner,,}/ab-geth:${resolved_geth_version}}"
 }
 
 function download_release() {
-    local selected_url
     local archive_path
     local checksum_url
     local checksum_path
     local extract_dir
 
-    selected_url="$(resolve_release)"
-    archive_path="${data_dir}/$(basename "${selected_url%%\?*}")"
-    checksum_url="${selected_url}.sha256"
+    archive_path="${data_dir}/$(basename "${network_release_url%%\?*}")"
+    checksum_url="${network_release_url}.sha256"
     checksum_path="${archive_path}.sha256"
     extract_dir="$(mktemp -d "${data_dir}/release.XXXXXX")"
 
-    color "34" "Downloading network Release: ${selected_url}"
-    curl -fL "${selected_url}" -o "${archive_path}"
+    color "34" "Downloading network Release: ${network_release_url}"
+    curl -fL "${network_release_url}" -o "${archive_path}"
 
     if curl -fsSL "${checksum_url}" -o "${checksum_path}"; then
         (
@@ -363,6 +411,8 @@ function download_release() {
     copy_release_file "${extract_dir}" checkpoint_sync_urls.txt false
     rm -rf -- "${extract_dir}"
 }
+
+resolve_release
 
 if [[ ! -s "${share_dir}/genesis.json" || ! -s "${share_dir}/genesis.ssz" ]]; then
     download_release
@@ -471,7 +521,7 @@ if [[ ! -d "${geth_data_dir}/geth/chaindata" ]]; then
     docker run --rm \
         -v "${geth_data_dir}:/data" \
         -v "${share_dir}:/share:ro" \
-        "${default_geth_image}" \
+        "${geth_image}" \
         --datadir=/data init /share/genesis.json
 fi
 
@@ -502,7 +552,7 @@ docker run -d \
     --network host \
     -v "${geth_data_dir}:/data" \
     -v "${share_dir}:/share:ro" \
-    "${default_geth_image}" "${geth_args[@]}" >/dev/null
+    "${geth_image}" "${geth_args[@]}" >/dev/null
 
 mapfile -t bootstrap_args < <(
     if [[ -f "${share_dir}/bootstrap_nodes.txt" ]]; then
@@ -625,6 +675,7 @@ color "32" "AB PoS node installation completed."
 color "37" "Network: ${network}"
 color "37" "Consensus client: ${consensus_client}"
 color "37" "Execution client: geth"
+color "37" "Execution image: ${geth_image}"
 color "37" "Data directory: ${data_dir}"
 color "37" "Synchronization source: $([[ "${genesis_mode}" == true ]] && echo genesis || echo checkpoint)"
 show_status
