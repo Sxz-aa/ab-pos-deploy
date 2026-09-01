@@ -1,8 +1,6 @@
 # AB PoS Node Deployment Guide
 
-This repository provides the public Docker deployment entry point for joining an AB PoS network after genesis. It supports Geth as the execution client and either Prysm or Lighthouse as the consensus client.
-
-The normal workflow in this guide assumes that the network has already started, finalized a checkpoint, and published a network Release. Genesis participants and Network Operators should use the separate [Genesis Participation and Release Guide](genesis/README.md).
+This repository provides the public Docker deployment entry point for joining an AB PoS network. It supports Geth as the execution client and either Prysm or Lighthouse as the consensus client.
 
 ## 1. Node types
 
@@ -11,8 +9,6 @@ The normal workflow in this guide assumes that the network has already started, 
 | RPC node | Geth and a beacon node | No | Checkpoint |
 | Validator node | Geth, a beacon node, and a validator client | Yes | Checkpoint |
 | Archive node | Archive Geth and a beacon node | No | Checkpoint |
-
-Genesis is a startup method, not a separate node type. The public post-genesis commands below intentionally do not use `--genesis`.
 
 ## 2. System requirements
 
@@ -29,13 +25,26 @@ Archive nodes require substantially more storage, IOPS, and synchronization time
 ### 2.2 Required software
 
 - Docker Engine
-- Bash
-- curl
 - jq
-- OpenSSL
-- tar, find, and sha256sum
 
-The default data root is `/data/abpos`. Mount the system data disk at `/data`, or use `--root-dir` to select another location.
+Docker must be running and accessible to the current user:
+
+```bash
+docker info
+```
+
+The default data root is `/data/abpos`. Prepare it once and give the current user ownership:
+
+```bash
+sudo mkdir -p /data/abpos
+sudo chown "$(id -u):$(id -g)" /data/abpos
+```
+
+This setup is the only command in this guide that normally needs `sudo`. To avoid it entirely, select a user-writable location when deploying:
+
+```bash
+./ab-pos.sh testnet prysm geth --root-dir "$PWD/abpos-data"
+```
 
 ## 3. Install the deployment script
 
@@ -48,35 +57,39 @@ chmod +x ab-pos.sh
 
 The installer downloads the selected network archive from the latest GitHub Release in `abdaodev/ab-pos-deploy`. Override the source with `--release-repo`, `--release`, or `--release-url` when required.
 
-## 4. Deploy an RPC node
+## 4. Deploy a node
+
+Every deployment runs Geth and one beacon node. Validator and archive behavior are optional additions to the same node, so `--validator` and `--archive` may be used separately or together.
+
+### 4.1 RPC node
 
 Deploy Geth with Prysm:
 
 ```bash
-sudo ./ab-pos.sh testnet prysm geth
+./ab-pos.sh testnet prysm geth
 ```
 
 Deploy Geth with Lighthouse:
 
 ```bash
-sudo ./ab-pos.sh testnet lighthouse geth
+./ab-pos.sh testnet lighthouse geth
 ```
 
 The default command reads its trusted checkpoint provider from `checkpoint_sync_urls.txt` in the selected network Release. To use an explicitly selected provider:
 
 ```bash
-sudo ./ab-pos.sh testnet prysm geth \
+./ab-pos.sh testnet prysm geth \
   --checkpoint-url https://checkpoint.example.org
 ```
 
 Verify the checkpoint provider through an independent trusted channel before using it.
 
-## 5. Deploy a validator node
+### 4.2 Add validator duties
 
-A post-genesis validator deployment creates a new mnemonic, password, keystores, and deposit data when its validator key directory is empty.
+A validator deployment creates a new mnemonic, password, keystores, and deposit data when its validator key directory is empty.
 
 ```bash
-sudo ./ab-pos.sh testnet prysm geth \
+./ab-pos.sh testnet prysm geth \
   --validator \
   --validator-count 1000 \
   --withdrawal-address 0x0000000000000000000000000000000000000000 \
@@ -86,7 +99,7 @@ sudo ./ab-pos.sh testnet prysm geth \
 Lighthouse uses the same options:
 
 ```bash
-sudo ./ab-pos.sh testnet lighthouse geth \
+./ab-pos.sh testnet lighthouse geth \
   --validator \
   --validator-count 1000 \
   --withdrawal-address 0x0000000000000000000000000000000000000000 \
@@ -95,7 +108,7 @@ sudo ./ab-pos.sh testnet lighthouse geth \
 
 Replace every example address and IP before running either command.
 
-The default post-genesis key locations are:
+The default key locations are:
 
 ```text
 /data/abpos/testnet/
@@ -110,42 +123,57 @@ Generating keys and starting a validator client does not complete the staking pr
 
 Back up the mnemonic, password, keystores, and slashing protection data. Never run the same validator keys in more than one validator client at the same time.
 
-## 6. Deploy an archive node
+### 4.3 Add archive storage
 
 ```bash
-sudo ./ab-pos.sh testnet lighthouse geth --archive
+./ab-pos.sh testnet lighthouse geth --archive
 ```
 
 This starts Geth with full synchronization and archive state retention. It does not start a validator client unless `--validator` is also specified.
 
-## 7. Node operations
+### 4.4 Combine validator and archive modes
+
+To run the validator client and retain archive execution state on the same node, combine both flags:
+
+```bash
+./ab-pos.sh testnet lighthouse geth \
+  --validator \
+  --archive \
+  --validator-count 1000 \
+  --withdrawal-address 0x0000000000000000000000000000000000000000 \
+  --fee-recipient 0x0000000000000000000000000000000000000000
+```
+
+This combined mode has the archive node's additional storage and IOPS requirements.
+
+## 5. Node operations
 
 Use the same network and consensus client that were selected during installation.
 
 Show container and synchronization status:
 
 ```bash
-sudo ./ab-pos.sh testnet prysm geth --status
+./ab-pos.sh testnet prysm geth --status
 ```
 
 Follow logs:
 
 ```bash
-sudo ./ab-pos.sh testnet prysm geth --logs geth
-sudo ./ab-pos.sh testnet prysm geth --logs beacon
-sudo ./ab-pos.sh testnet prysm geth --logs validator
+./ab-pos.sh testnet prysm geth --logs geth
+./ab-pos.sh testnet prysm geth --logs beacon
+./ab-pos.sh testnet prysm geth --logs validator
 ```
 
 Stop or restart the node:
 
 ```bash
-sudo ./ab-pos.sh testnet prysm geth --stop
-sudo ./ab-pos.sh testnet prysm geth --restart
+./ab-pos.sh testnet prysm geth --stop
+./ab-pos.sh testnet prysm geth --restart
 ```
 
 Run `./ab-pos.sh --help` for the complete option reference.
 
-## 8. Network ports
+## 6. Network ports
 
 | Service | Bind address | Port | Protocol | Notes |
 | --- | --- | ---: | --- | --- |
@@ -159,19 +187,15 @@ Run `./ab-pos.sh --help` for the complete option reference.
 
 Allow the public P2P ports through the host firewall. Keep loopback-only APIs private unless an authenticated access-control layer protects them.
 
-## 9. Current limitations
+## 7. Current limitations
 
 The first version of `ab-pos.sh` has the following known boundaries:
 
 - It does not submit on-chain validator deposits.
-- It does not generate genesis files or checkpoints.
+- It does not generate checkpoints.
 - It does not deploy monitoring, a reverse proxy, TLS, or firewall rules.
 - `--binary` is reserved and not implemented.
 - A missing Release checksum produces a warning rather than a hard failure.
 - It does not back up or migrate slashing protection data.
 - Fixed container names and ports prevent multiple instances of the same network on one host.
 - End-to-end production testing is still required for each supported client and node mode.
-
-## 10. Genesis participation
-
-Do not generate genesis keys with the post-genesis validator workflow. Genesis validator keys must exist before the network genesis state is built. See [genesis/README.md](genesis/README.md) for the multi-operator process, key-generation boundary, public deposit data handoff, network Release lifecycle, and genesis node startup.
