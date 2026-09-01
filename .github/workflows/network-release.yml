@@ -1,0 +1,26 @@
+name: Network Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Build network artifacts
+        run: make VERSION="${GITHUB_REF_NAME}"
+
+      - name: Upload network artifacts to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/abpos-*.tar.gz
+            build/abpos-*.tar.gz.sha256
