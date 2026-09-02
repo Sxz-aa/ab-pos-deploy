@@ -12,7 +12,6 @@ readonly artifact_name="ab-geth-${ab_geth_version}-linux-${platform_arch}"
 readonly artifact="${build_dir}/${artifact_name}"
 readonly export_dir="${build_dir}/.geth-binary-export"
 readonly temporary_image="ab-geth-build:${ab_geth_version}"
-readonly build_fingerprint="$("${root_dir}/scripts/geth-build-fingerprint.sh")"
 container_id=""
 
 function fail() {
@@ -65,21 +64,5 @@ install -m 0755 "${export_dir}/geth" "${artifact}"
     sha256sum "${artifact_name}" > "${artifact_name}.sha256"
 )
 
-{
-    printf 'artifact=%s\n' "${artifact_name}"
-    printf 'ab_geth_version=%s\n' "${ab_geth_version}"
-    printf 'upstream_repository=%s\n' "${GETH_REPOSITORY:-https://github.com/ethereum/go-ethereum.git}"
-    printf 'upstream_version=%s\n' "${geth_version}"
-    printf 'upstream_commit=%s\n' "$(git -C "${source_dir}" rev-parse HEAD)"
-    printf 'platform=%s\n' "${geth_platform}"
-    printf 'build_fingerprint=%s\n' "${build_fingerprint}"
-    printf 'patches=\n'
-    (
-        cd "${root_dir}"
-        sha256sum patches/go-ethereum/*.patch
-    )
-} > "${artifact}.build-info.txt"
-
 printf 'Created %s\n' "${artifact}"
 printf 'Created %s.sha256\n' "${artifact}"
-printf 'Created %s.build-info.txt\n' "${artifact}"

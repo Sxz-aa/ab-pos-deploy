@@ -9,8 +9,6 @@ readonly geth_image="${GETH_IMAGE:-ghcr.io/abdaodev/ab-geth}"
 readonly geth_platform="${GETH_PLATFORM:-linux/amd64}"
 readonly platform_arch="${geth_platform#*/}"
 readonly binary="${build_dir}/ab-geth-${ab_geth_version}-linux-${platform_arch}"
-readonly archive_name="ab-geth-${ab_geth_version}-linux-${platform_arch}.docker.tar.gz"
-readonly archive="${build_dir}/${archive_name}"
 readonly context_dir="${build_dir}/.geth-runtime-context"
 readonly build_fingerprint="$("${root_dir}/scripts/geth-build-fingerprint.sh")"
 
@@ -20,8 +18,6 @@ function fail() {
 }
 
 command -v docker >/dev/null 2>&1 || fail "Docker Engine is required to build the ab-geth image"
-command -v gzip >/dev/null 2>&1 || fail "gzip is required"
-command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
 
 [[ -x "${binary}" ]] || fail "patched geth binary not found: ${binary}; run make geth"
 mkdir -p "${build_dir}"
@@ -38,13 +34,3 @@ DOCKER_BUILDKIT=0 docker build \
     -t "${geth_image}:${ab_geth_version}" \
     -f "${root_dir}/docker/geth/Runtime.Dockerfile" \
     "${context_dir}"
-
-printf 'Saving Docker image to %s\n' "${archive}"
-docker save "${geth_image}:${ab_geth_version}" | gzip -n > "${archive}"
-(
-    cd "${build_dir}"
-    sha256sum "${archive_name}" > "${archive_name}.sha256"
-)
-
-printf 'Created %s\n' "${archive}"
-printf 'Created %s.sha256\n' "${archive}"
