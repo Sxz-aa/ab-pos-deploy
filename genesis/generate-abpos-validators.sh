@@ -8,13 +8,6 @@ set -euo pipefail
 readonly validator_count="${VALIDATOR_COUNT:-1000}"
 readonly validator_start_index=0
 readonly deposit_amount=2048
-readonly root_path="${ABPOS_ROOT_PATH:-/data/abpos}"
-readonly keys_path="${root_path}/keys"
-readonly validator_keys_path="${keys_path}/validator_keys"
-readonly legacy_validator_keys_path="${validator_keys_path}/validator_keys"
-readonly password_path="${keys_path}/pwd.txt"
-readonly mnemonic_path="${keys_path}/mnemonic.txt"
-readonly bin_path="${root_path}/bin"
 readonly host_uid="${SUDO_UID:-$(id -u)}"
 readonly host_gid="${SUDO_GID:-$(id -g)}"
 readonly deposit_cli_image="${DEPOSIT_CLI_IMAGE:-ghcr.io/ethstaker/ethstaker-deposit-cli:latest}"
@@ -43,10 +36,14 @@ function usage() {
 Generate AB PoS genesis validator keys and deposit data.
 
 Usage:
-  generate-abpos-validators.sh [OPTIONS] <withdrawal-address>
-  WITHDRAWAL_ADDRESS=<address> generate-abpos-validators.sh [OPTIONS]
+  generate-abpos-validators.sh [OPTIONS] <network> <withdrawal-address>
+  WITHDRAWAL_ADDRESS=<address> generate-abpos-validators.sh [OPTIONS] <network>
 
 Arguments:
+  network
+      Network whose Genesis Validator keys are being generated.
+      Supported values: testnet, mainnet.
+
   withdrawal-address
       Ethereum execution-layer address that receives validator withdrawals.
       The value must be a 20-byte hexadecimal address prefixed with 0x.
@@ -70,8 +67,8 @@ Environment variables:
       Default: 1000
 
   ABPOS_ROOT_PATH
-      Root output directory.
-      Default: /data/abpos
+      Network output directory.
+      Default: /data/abpos/<network>
 
   DEPOSIT_CLI_IMAGE
       Deposit CLI Docker image used by --docker.
@@ -89,18 +86,21 @@ Outputs:
 
 Examples:
   ./generate-abpos-validators.sh \
+    testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   ./generate-abpos-validators.sh --binary \
+    testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   VALIDATOR_COUNT=10 \
-    ABPOS_ROOT_PATH=/data/abpos/test-10 \
+    ABPOS_ROOT_PATH=/data/abpos/testnet-operator-a \
     ./generate-abpos-validators.sh \
+    testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   WITHDRAWAL_ADDRESS=0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332 \
-    ./generate-abpos-validators.sh
+    ./generate-abpos-validators.sh testnet
 
 Security:
   Share only deposit_data-*.json with the Network Operator.
@@ -222,12 +222,19 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-if [[ "${#arguments[@]}" -gt 1 ]]; then
+if [[ "${#arguments[@]}" -lt 1 || "${#arguments[@]}" -gt 2 ]]; then
     usage >&2
-    fail "Expected one withdrawal address, received ${#arguments[@]} arguments."
+    fail "Expected a network and an optional withdrawal address."
 fi
 
-withdrawal_address="${arguments[0]:-${WITHDRAWAL_ADDRESS:-}}"
+network="${arguments[0],,}"
+case "${network}" in
+    test | testnet) network="testnet" ;;
+    main | mainnet) network="mainnet" ;;
+    *) fail "Unsupported network: ${network}" ;;
+esac
+
+withdrawal_address="${arguments[1]:-${WITHDRAWAL_ADDRESS:-}}"
 
 if [[ -z "${withdrawal_address}" ]]; then
     usage
@@ -241,6 +248,15 @@ fi
 if [[ ! "${validator_count}" =~ ^[1-9][0-9]*$ ]]; then
     fail "VALIDATOR_COUNT must be a positive integer."
 fi
+
+readonly network
+readonly root_path="${ABPOS_ROOT_PATH:-/data/abpos/${network}}"
+readonly keys_path="${root_path}/keys"
+readonly validator_keys_path="${keys_path}/validator_keys"
+readonly legacy_validator_keys_path="${validator_keys_path}/validator_keys"
+readonly password_path="${keys_path}/pwd.txt"
+readonly mnemonic_path="${keys_path}/mnemonic.txt"
+readonly bin_path="${root_path}/bin"
 
 require_command find
 require_command mv

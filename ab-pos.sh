@@ -69,8 +69,8 @@ Core options:
   --release-url URL              Download a specific .tar.gz Release archive
   --root-dir PATH                Default: /data/abpos
   --data-dir PATH                Default: <root-dir>/<network>
-  --keys-dir PATH                Default: <root-dir>/keys/validator_keys
-  --password-file PATH           Default: <root-dir>/keys/pwd.txt
+  --keys-dir PATH                Override the mode-specific key directory
+  --password-file PATH           Override the password file beside the keys
   --docker                       Deploy containers; default
   --binary                       Deploy downloaded native binaries
   --yes                          Skip non-destructive confirmation prompts
@@ -229,7 +229,7 @@ if [[ -z "${keys_dir}" ]]; then
     if [[ "${validator_mode}" == true && "${genesis_mode}" == false ]]; then
         keys_dir="${data_dir}/validator-keys"
     else
-        keys_dir="${root_dir}/keys/validator_keys"
+        keys_dir="${data_dir}/keys/validator_keys"
     fi
 fi
 password_file="${password_file:-$(dirname "${keys_dir}")/pwd.txt}"

@@ -74,6 +74,7 @@ curl -fLO \
 chmod +x generate-abpos-validators.sh
 
 ./generate-abpos-validators.sh \
+  testnet \
   0x0000000000000000000000000000000000000000
 ```
 
@@ -83,6 +84,7 @@ To use the official EthStaker Deposit CLI binary instead of Docker:
 
 ```bash
 ./generate-abpos-validators.sh --binary \
+  testnet \
   0x0000000000000000000000000000000000000000
 ```
 
@@ -94,12 +96,12 @@ The current generator defaults to:
 - 2048 ETH per validator deposit record
 - `0x02` compounding withdrawal credentials
 - AB Core devnet chain settings
-- `/data/abpos` as the output root
+- `/data/abpos/<network>` as the output root
 
 ### 4.3 Generated files
 
 ```text
-/data/abpos/keys/
+/data/abpos/testnet/keys/
 |-- mnemonic.txt
 |-- pwd.txt
 `-- validator_keys/
@@ -120,8 +122,9 @@ One deposit data file normally contains an array with many validator records. Th
 
 ```bash
 VALIDATOR_COUNT=10 \
-ABPOS_ROOT_PATH=/data/abpos/operator-a \
+ABPOS_ROOT_PATH=/data/abpos/testnet-operator-a \
 ./generate-abpos-validators.sh \
+  testnet \
   0x0000000000000000000000000000000000000000
 ```
 
@@ -129,7 +132,7 @@ ABPOS_ROOT_PATH=/data/abpos/operator-a \
 | --- | --- | --- |
 | `WITHDRAWAL_ADDRESS` | None | Used when the positional address is omitted |
 | `VALIDATOR_COUNT` | `1000` | Number of validators to generate |
-| `ABPOS_ROOT_PATH` | `/data/abpos` | Output root |
+| `ABPOS_ROOT_PATH` | `/data/abpos/<network>` | Network output directory |
 | `DEPOSIT_CLI_IMAGE` | `ghcr.io/ethstaker/ethstaker-deposit-cli:latest` | Deposit CLI container image used by `--docker` |
 | `DEPOSIT_CLI_RELEASE_VERSION` | `latest` | Deposit CLI Release tag used by `--binary` |
 
@@ -157,8 +160,8 @@ Back up `mnemonic.txt`, `pwd.txt`, and all keystores before the handoff. Then pr
 Useful local checks:
 
 ```bash
-jq 'length' /data/abpos/keys/validator_keys/deposit_data-*.json
-sha256sum /data/abpos/keys/validator_keys/deposit_data-*.json
+jq 'length' /data/abpos/testnet/keys/validator_keys/deposit_data-*.json
+sha256sum /data/abpos/testnet/keys/validator_keys/deposit_data-*.json
 ```
 
 The Network Operator should record the submitting operator, expected validator count, file checksum, withdrawal address, and accepted network parameters without taking custody of any private key material.
@@ -376,8 +379,8 @@ sudo ./ab-pos.sh testnet prysm geth \
 The default inputs are:
 
 ```text
-/data/abpos/keys/validator_keys/
-/data/abpos/keys/pwd.txt
+/data/abpos/testnet/keys/validator_keys/
+/data/abpos/testnet/keys/pwd.txt
 ```
 
 Override them when necessary:
