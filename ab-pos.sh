@@ -61,7 +61,7 @@ Validator behavior:
 
 Core options:
   --withdrawal-address ADDRESS   Required when generating new validator keys
-  --fee-recipient ADDRESS        Required for a validator node
+  --fee-recipient ADDRESS        Required only when no saved value exists
   --validator-count NUMBER       Default: 1000
   --checkpoint-url URL           Override the Release checkpoint URL
   --release VERSION              Release tag; default: latest
@@ -69,8 +69,8 @@ Core options:
   --release-url URL              Download a specific .tar.gz Release archive
   --root-dir PATH                Default: /data/abpos
   --data-dir PATH                Default: <root-dir>/<network>
-  --keys-dir PATH                Override the mode-specific key directory
-  --password-file PATH           Override the password file beside the keys
+  --keys-dir PATH                Keystores to import when supplied
+  --password-file PATH           Keystore import or Prysm wallet password
   --docker                       Deploy containers; default
   --binary                       Deploy downloaded native binaries
   --yes                          Skip non-destructive confirmation prompts
@@ -201,7 +201,9 @@ deployment_mode_selected=false
 root_dir="${default_root_dir}"
 data_dir=""
 keys_dir=""
+keys_dir_selected=false
 password_file=""
+password_file_selected=false
 validator_count="1000"
 assume_yes=false
 
@@ -252,8 +254,8 @@ while [[ "$#" -gt 0 ]]; do
         --release-url) release_url="${2:-}"; shift ;;
         --root-dir) root_dir="${2:-}"; shift ;;
         --data-dir) data_dir="${2:-}"; shift ;;
-        --keys-dir) keys_dir="${2:-}"; shift ;;
-        --password-file) password_file="${2:-}"; shift ;;
+        --keys-dir) keys_dir="${2:-}"; keys_dir_selected=true; shift ;;
+        --password-file) password_file="${2:-}"; password_file_selected=true; shift ;;
         --docker)
             [[ "${deployment_mode_selected}" == false || "${deployment_mode}" == "docker" ]] \
                 || fail "--docker and --binary cannot be used together."
@@ -305,6 +307,8 @@ jwt_secret_file="${data_dir}/jwtsecret"
 bin_dir="${data_dir}/bin"
 run_dir="${data_dir}/run"
 log_dir="${data_dir}/logs"
+fee_recipient_file="${data_dir}/fee-recipient.txt"
+validator_password_reference_file="${data_dir}/validator-password-file.txt"
 
 container_prefix="abpos-${network}"
 geth_container="${container_prefix}-geth"
@@ -334,6 +338,126 @@ function remove_legacy_container() {
     fi
     color "34" "Replacing legacy container ${container_name}."
     docker rm -f "${container_name}" >/dev/null
+}
+
+function existing_validator_container() {
+    local candidate
+
+    [[ "${deployment_mode}" == "docker" ]] || return 0
+    for candidate in "${validator_container}" abpos-validator; do
+        if container_exists "${candidate}" \
+            && container_mounts_host_path "${candidate}" "${validator_data_dir}"; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+}
+
+function validator_keys_are_imported() {
+    case "${consensus_client}" in
+        prysm)
+            [[ -s "${validator_data_dir}/direct/accounts/all-accounts.keystore.json" ]]
+            ;;
+        lighthouse)
+            [[ -n "$(find "${validator_data_dir}/validators" -type f -name voting-keystore.json -print -quit 2>/dev/null)" ]]
+            ;;
+    esac
+}
+
+function validator_key_import_required() {
+    [[ "${keys_dir_selected}" == true ]] || ! validator_keys_are_imported
+}
+
+function save_local_setting() {
+    local destination="$1"
+    local value="$2"
+    local mode="$3"
+    local temporary_file
+
+    temporary_file="$(mktemp "${data_dir}/.$(basename "${destination}").XXXXXX")"
+    printf '%s\n' "${value}" >"${temporary_file}"
+    chmod "${mode}" "${temporary_file}"
+    mv -f -- "${temporary_file}" "${destination}"
+}
+
+function fee_recipient_from_existing_runtime() {
+    local container_name
+    local launcher
+
+    if [[ "${deployment_mode}" == "docker" ]]; then
+        container_name="$(existing_validator_container)"
+        [[ -n "${container_name}" ]] || return 0
+        docker container inspect "${container_name}" --format '{{json .Config.Cmd}}' \
+            | jq -r '.[]? | select(startswith("--suggested-fee-recipient=")) | sub("^--suggested-fee-recipient="; "")' \
+            | head -n 1
+        return 0
+    fi
+
+    launcher="$(binary_launcher_file validator)"
+    [[ -f "${launcher}" ]] || return 0
+    grep -oE -- '--suggested-fee-recipient=0x[0-9a-fA-F]{40}' "${launcher}" \
+        | head -n 1 \
+        | cut -d= -f2
+}
+
+function password_file_from_existing_container() {
+    local container_name
+
+    [[ "${deployment_mode}" == "docker" ]] || return 0
+    container_name="$(existing_validator_container)"
+    [[ -n "${container_name}" ]] || return 0
+    docker container inspect "${container_name}" --format '{{json .Mounts}}' \
+        | jq -r '.[]? | select(.Destination == "/password.txt") | .Source' \
+        | head -n 1
+}
+
+function resolve_saved_validator_settings() {
+    local detected_value
+    local saved_value
+
+    mkdir -p "${data_dir}"
+
+    if [[ -z "${fee_recipient}" ]]; then
+        fee_recipient="$(first_data_line "${fee_recipient_file}")"
+    fi
+    if [[ -z "${fee_recipient}" ]]; then
+        detected_value="$(fee_recipient_from_existing_runtime)"
+        fee_recipient="${detected_value}"
+    fi
+    [[ -n "${fee_recipient}" ]] \
+        || fail "--fee-recipient is required for the first validator installation."
+    require_address "fee recipient" "${fee_recipient}"
+    save_local_setting "${fee_recipient_file}" "${fee_recipient}" 0644
+
+    if [[ "${password_file_selected}" == false && ! -s "${password_file}" ]]; then
+        saved_value="$(first_data_line "${validator_password_reference_file}")"
+        if [[ -n "${saved_value}" && -s "${saved_value}" ]]; then
+            password_file="${saved_value}"
+        else
+            detected_value="$(password_file_from_existing_container)"
+            if [[ -n "${detected_value}" && -s "${detected_value}" ]]; then
+                password_file="${detected_value}"
+            fi
+        fi
+    fi
+    mnemonic_file="$(dirname "${password_file}")/mnemonic.txt"
+}
+
+function save_validator_password_reference() {
+    [[ "${consensus_client}" == "prysm" && -s "${password_file}" ]] || return 0
+    save_local_setting "${validator_password_reference_file}" "${password_file}" 0600
+}
+
+function prysm_import_was_duplicate_only() {
+    local import_log="$1"
+    local duplicate_count
+    local source_count
+
+    source_count="$(find "${keys_dir}" -maxdepth 1 -type f -name 'keystore-*.json' | wc -l | tr -d ' ')"
+    duplicate_count="$(grep -c 'Duplicate key .* found in import request, skipped' "${import_log}" || true)"
+    [[ "${source_count}" -gt 0 \
+        && "${duplicate_count}" -eq "${source_count}" \
+        && -n "$(grep -F 'no accounts were successfully imported' "${import_log}" || true)" ]]
 }
 
 function show_sync_status() {
@@ -538,8 +662,7 @@ else
 fi
 
 if [[ "${validator_mode}" == true ]]; then
-    [[ -n "${fee_recipient}" ]] || fail "--fee-recipient is required with --validator."
-    require_address "fee recipient" "${fee_recipient}"
+    resolve_saved_validator_settings
 fi
 
 if [[ "${validator_mode}" == true && "${genesis_mode}" == false ]]; then
@@ -932,12 +1055,20 @@ function generate_validator_keys() {
 }
 
 if [[ "${validator_mode}" == true ]]; then
-    if [[ "${genesis_mode}" == true ]]; then
-        existing_keys="$(find "${keys_dir}" -maxdepth 1 -type f -name 'keystore-*.json' | wc -l | tr -d ' ')"
-        [[ "${existing_keys}" -gt 0 ]] || fail "Genesis validator mode requires existing keystores in ${keys_dir}."
+    if validator_key_import_required; then
+        if [[ "${genesis_mode}" == true ]]; then
+            existing_keys="$(find "${keys_dir}" -maxdepth 1 -type f -name 'keystore-*.json' | wc -l | tr -d ' ')"
+            [[ "${existing_keys}" -gt 0 ]] || fail "Genesis validator mode requires existing keystores in ${keys_dir}."
+        else
+            generate_validator_keys
+        fi
         [[ -s "${password_file}" ]] || fail "Missing validator password file: ${password_file}"
     else
-        generate_validator_keys
+        color "33" "Using the validator keys already imported in ${validator_data_dir}."
+    fi
+    if [[ "${consensus_client}" == "prysm" ]]; then
+        [[ -s "${password_file}" ]] || fail "Missing Prysm wallet password file: ${password_file}"
+        save_validator_password_reference
     fi
 fi
 
@@ -1101,17 +1232,38 @@ function write_binary_launcher() {
 }
 
 function import_prysm_keys_binary() {
+    local import_log
+    local import_status=0
+
+    if ! validator_key_import_required; then
+        return 0
+    fi
     if [[ ! -f "${validator_data_dir}/direct/accounts/all-accounts.keystore.json" ]]; then
         "${bin_dir}/prysm-validator" wallet create --accept-terms-of-use=true \
             "--wallet-dir=${validator_data_dir}" "--wallet-password-file=${password_file}" \
             --keymanager-kind=imported
     fi
+    import_log="$(mktemp "${data_dir}/prysm-import.XXXXXX")"
     "${bin_dir}/prysm-validator" accounts import --accept-terms-of-use=true \
         "--wallet-dir=${validator_data_dir}" "--wallet-password-file=${password_file}" \
-        "--account-password-file=${password_file}" "--keys-dir=${keys_dir}"
+        "--account-password-file=${password_file}" "--keys-dir=${keys_dir}" \
+        >"${import_log}" 2>&1 || import_status=$?
+    cat "${import_log}"
+    if (( import_status != 0 )); then
+        if prysm_import_was_duplicate_only "${import_log}"; then
+            color "33" "All supplied Prysm validator keys were already imported."
+        else
+            rm -f -- "${import_log}"
+            return "${import_status}"
+        fi
+    fi
+    rm -f -- "${import_log}"
 }
 
 function import_lighthouse_keys_binary() {
+    if ! validator_key_import_required; then
+        return 0
+    fi
     "${bin_dir}/lighthouse" account validator import \
         "--testnet-dir=${share_dir}" "--datadir=${validator_data_dir}" \
         "--directory=${keys_dir}" --reuse-password "--password-file=${password_file}"
@@ -1360,6 +1512,12 @@ else
 fi
 
 function import_prysm_keys() {
+    local import_log
+    local import_status=0
+
+    if ! validator_key_import_required; then
+        return 0
+    fi
     if [[ ! -f "${validator_data_dir}/direct/accounts/all-accounts.keystore.json" ]]; then
         docker run --rm \
             -v "${validator_data_dir}:/wallet" \
@@ -1369,6 +1527,7 @@ function import_prysm_keys() {
             --wallet-dir=/wallet --wallet-password-file=/password.txt \
             --keymanager-kind=imported
     fi
+    import_log="$(mktemp "${data_dir}/prysm-import.XXXXXX")"
     docker run --rm \
         -v "${validator_data_dir}:/wallet" \
         -v "${keys_dir}:/keys:ro" \
@@ -1376,10 +1535,24 @@ function import_prysm_keys() {
         "${default_prysm_validator_image}" \
         accounts import --accept-terms-of-use=true \
         --wallet-dir=/wallet --wallet-password-file=/password.txt \
-        --account-password-file=/password.txt --keys-dir=/keys
+        --account-password-file=/password.txt --keys-dir=/keys \
+        >"${import_log}" 2>&1 || import_status=$?
+    cat "${import_log}"
+    if (( import_status != 0 )); then
+        if prysm_import_was_duplicate_only "${import_log}"; then
+            color "33" "All supplied Prysm validator keys were already imported."
+        else
+            rm -f -- "${import_log}"
+            return "${import_status}"
+        fi
+    fi
+    rm -f -- "${import_log}"
 }
 
 function import_lighthouse_keys() {
+    if ! validator_key_import_required; then
+        return 0
+    fi
     docker run --rm \
         -v "${validator_data_dir}:/validator-data" \
         -v "${share_dir}:/share:ro" \
