@@ -9,6 +9,8 @@ The central security boundary is simple: each Validator Operator keeps all signi
 | Script | Responsibility | Primary user | Lifecycle stage |
 | --- | --- | --- | --- |
 | `generate-abpos-validators.sh` | Generate genesis validator secrets, keystores, and deposit data | Genesis Validator Operator | Before genesis is built |
+| `prepare-abpos-genesis-deposits.sh` | Validate and combine public deposit records | Network Operator | Before genesis is built |
+| `generate-abpos-genesis.sh` | Build and verify execution and consensus genesis files | Network Operator | After deposit data is accepted |
 | `ab-pos.sh` | Download a network Release and deploy Geth, a beacon node, and optionally a validator client | Node and infrastructure operators | After a Release is published |
 
 `generate-abpos-validators.sh` does not build genesis files or deploy a node. `ab-pos.sh --genesis --validator` does not generate keys; it imports the same keys that were included in the genesis validator set.
@@ -200,7 +202,59 @@ Before building genesis, validate every deposit record and the combined set:
 - The resulting genesis validator pubkeys exactly match the accepted deposit records.
 - The execution-layer premine calculation accounts for the actual total validator stake.
 
-The older `pos-docs` external-deposit branch contains useful validation concepts, but its deployment and key-distribution logic is not part of this public repository. Genesis construction must use a separately reviewed builder workflow.
+The builder scripts in this directory implement the public-deposit portion of the validated `pos-docs` external-deposit workflow. They intentionally omit its client download, SSH deployment, runtime key import, and node-management logic.
+
+### 6.1 Prepare deposit data
+
+Place each operator's accepted deposit file below one input directory. Subdirectories may be used to separate operators:
+
+```text
+validator-deposits/
+|-- operator-a/deposit_data-*.json
+`-- operator-b/deposit_data-*.json
+```
+
+Validate and convert the records without building genesis:
+
+```bash
+EXPECTED_VALIDATOR_COUNT=2000 \
+./genesis/prepare-abpos-genesis-deposits.sh \
+  ./validator-deposits \
+  ./additional-validators.txt
+```
+
+The generated intermediate file contains one public record per line:
+
+```text
+0xPUBKEY:0xWITHDRAWAL_CREDENTIALS:AMOUNT_GWEI
+```
+
+### 6.2 Generate genesis files
+
+The full builder calls the deposit preparation step automatically and uses the selected network files under `abpos/<network>/share` as reviewed templates:
+
+```bash
+EXPECTED_VALIDATOR_COUNT=2000 \
+GENESIS_TIMESTAMP=1788156583 \
+GENESIS_GENERATOR_IMAGE=ethpandaops/ethereum-genesis-generator@sha256:REVIEWED_DIGEST \
+./genesis/generate-abpos-genesis.sh \
+  ./validator-deposits \
+  ./genesis-output
+```
+
+`GENESIS_TIMESTAMP` is `MIN_GENESIS_TIME`, not the final beacon genesis time. The configured `GENESIS_DELAY` is added by the consensus generator. If the timestamp is omitted, the script uses the current time plus 300 seconds; an explicit reviewed timestamp should be used for a coordinated network launch.
+
+The builder:
+
+- Verifies every deposit record's pubkey, withdrawal credentials, amount, fork version, and network name.
+- Rejects duplicate pubkeys and validator-count mismatches.
+- Recalculates the execution-layer premine from the actual total genesis stake.
+- Generates `genesis.ssz` with `eth-genesis-state-generator` from the accepted public validator set.
+- Verifies that the generated validator pubkey set exactly matches the accepted deposit data.
+- Produces `deposit_contract.txt`, `deposit_contract_block_hash.txt`, and `genesis_validators_root.txt` alongside the client configuration.
+- Never reads validator keystores and never publishes or copies a JWT secret.
+
+Review the generator image digest, templates, timestamp, premine calculation, fork schedule, generated roots, and bootnode lists independently before copying approved output into `abpos/<network>/share`.
 
 ## 7. Prepare the network Release
 
@@ -216,12 +270,17 @@ The current installer consumes the following files:
 | --- | --- | --- |
 | `genesis.json` | Yes | Geth genesis |
 | `genesis.ssz` | Yes | Consensus genesis state |
-| `jwtsecret` | Yes | Local Engine API authentication material |
 | `config.yaml` | Yes | Lighthouse custom network configuration |
 | `config.prysm.yaml` | Yes | Prysm custom network configuration |
-| `bootstrap_nodes.txt` | Optional | Beacon ENR list, one per line |
-| `enodes.txt` | Optional | Geth enode list, one per line |
+| `deposit_contract.txt` | No | Public deposit contract address for tooling and verification |
+| `deposit_contract_block.txt` | Yes | Execution-layer deposit contract deployment block used by Lighthouse |
+| `deposit_contract_block_hash.txt` | No | Deposit contract deployment block hash |
+| `genesis_validators_root.txt` | No | Published consensus genesis validators root |
+| `bootstrap_nodes.txt` | Yes | Beacon ENR list, one per line |
+| `bootstrap_nodes_execution.txt` | Yes | Geth enode list, one per line |
 | `checkpoint_sync_urls.txt` | Required after genesis | Trusted Beacon API checkpoint provider URLs, one per line |
+
+Do not include `jwtsecret` in the network share or Release. The installer generates a private JWT secret under each node's data directory and supplies the same local file to its execution and consensus clients.
 
 The installer requires an explicit `--checkpoint-url` when `checkpoint_sync_urls.txt` is absent and the node is not using `--genesis`.
 
@@ -246,7 +305,7 @@ Do not advertise the default post-genesis command until the latest Release conta
 
 ### 7.2 Build release artifacts
 
-This repository follows the packaging pattern used by `ABFoundationGlobal/ab-deploy`. It packages existing public network files; it does not generate them.
+This repository follows the packaging pattern used by `ABFoundationGlobal/ab-deploy`. The Genesis Builder produces candidate public network files; `make network` packages only the files that the Network Operator has reviewed and placed under `abpos/<network>/share`.
 
 Build the initial package before a checkpoint exists:
 
@@ -262,7 +321,7 @@ After finalization, add at least one verified URL and build the ordinary-node pa
 make testnet VERSION=v1.0.1 RELEASE_PHASE=post-genesis
 ```
 
-The post-genesis build fails if `checkpoint_sync_urls.txt` is absent, empty, or contains a non-HTTP(S) entry. Every build also checks the required genesis files, JSON chain ID, JWT encoding, and any published ENR, enode, block-number, and checkpoint entries before creating an archive.
+The post-genesis build fails if `checkpoint_sync_urls.txt` is absent, empty, or contains a non-HTTP(S) entry. Every build also checks the required genesis files, JSON chain ID, deposit configuration, fork configuration, and any published ENR, enode, block-number, root, hash, and checkpoint entries before creating an archive.
 
 Output:
 
@@ -343,7 +402,8 @@ Genesis validator mode refuses to generate replacement keys. Newly generated pub
 
 This repository does not:
 
-- Combine deposit data or generate `genesis.json` and `genesis.ssz`.
+- Decide which submitted deposit records are authorized for a production genesis.
+- Replace independent review of the generator image, network templates, generated state, or supply calculation.
 - Send on-chain deposit transactions.
 - Generate or host checkpoints.
 - Enforce GPG verification of a Release.

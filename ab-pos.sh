@@ -113,20 +113,6 @@ function first_data_line() {
     sed -e 's/\r$//' -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*#/d' "${file}" | head -n 1
 }
 
-function copy_release_file() {
-    local source_root="$1"
-    local file_name="$2"
-    local required="${3:-true}"
-    local source_file
-
-    source_file="$(find "${source_root}" -type f -name "${file_name}" -print -quit)"
-    if [[ -z "${source_file}" ]]; then
-        [[ "${required}" == "false" ]] && return 0
-        fail "Release does not contain ${file_name}."
-    fi
-    install -m 644 "${source_file}" "${share_dir}/${file_name}"
-}
-
 network=""
 consensus_client=""
 execution_client=""
@@ -253,6 +239,7 @@ beacon_data_dir="${data_dir}/${consensus_client}"
 validator_data_dir="${data_dir}/${consensus_client}-validator"
 mnemonic_file="$(dirname "${password_file}")/mnemonic.txt"
 deposit_cli_image="${default_deposit_cli_image}"
+jwt_secret_file="${data_dir}/jwtsecret"
 bin_dir="${data_dir}/bin"
 run_dir="${data_dir}/run"
 log_dir="${data_dir}/logs"
@@ -478,6 +465,26 @@ fi
 mkdir -p "${share_dir}" "${geth_data_dir}" "${beacon_data_dir}" "${validator_data_dir}" \
     "${keys_dir}" "${bin_dir}" "${run_dir}" "${log_dir}"
 
+function ensure_local_jwt_secret() {
+    local jwt
+    local temporary_file
+
+    if [[ ! -s "${jwt_secret_file}" ]]; then
+        temporary_file="$(mktemp "${data_dir}/.jwtsecret.XXXXXX")"
+        openssl rand -hex 32 >"${temporary_file}"
+        chmod 600 "${temporary_file}"
+        mv -f -- "${temporary_file}" "${jwt_secret_file}"
+        color "32" "Generated local Engine API JWT secret: ${jwt_secret_file}"
+    fi
+
+    jwt="$(tr -d '[:space:]' < "${jwt_secret_file}")"
+    [[ "${jwt}" =~ ^[0-9a-fA-F]{64}$ ]] \
+        || fail "Local JWT secret must contain exactly 32 bytes encoded as 64 hexadecimal characters: ${jwt_secret_file}"
+    chmod 600 "${jwt_secret_file}"
+}
+
+ensure_local_jwt_secret
+
 function resolve_release() {
     local api_url="${github_api_url%/}/repos/${release_repo}/releases"
     local release_json
@@ -566,14 +573,16 @@ function resolve_release() {
 
 function download_release() {
     local archive_path
+    local archive_listing
     local checksum_url
     local checksum_path
-    local extract_dir
+    local member
+    local normalized_member
 
-    archive_path="${data_dir}/$(basename "${network_release_url%%\?*}")"
+    archive_path="${PWD}/$(basename "${network_release_url%%\?*}")"
+    archive_listing="${archive_path}.contents"
     checksum_url="${network_release_url}.sha256"
     checksum_path="${archive_path}.sha256"
-    extract_dir="$(mktemp -d "${data_dir}/release.XXXXXX")"
 
     color "34" "Downloading network Release: ${network_release_url}"
     curl -fL "${network_release_url}" -o "${archive_path}"
@@ -587,27 +596,39 @@ function download_release() {
         color "33" "Release checksum asset was not found; continuing without checksum verification."
     fi
 
-    tar -xzf "${archive_path}" -C "${extract_dir}"
-    copy_release_file "${extract_dir}" genesis.json
-    copy_release_file "${extract_dir}" genesis.ssz
-    copy_release_file "${extract_dir}" jwtsecret
-    copy_release_file "${extract_dir}" config.yaml
-    copy_release_file "${extract_dir}" config.prysm.yaml
-    copy_release_file "${extract_dir}" bootstrap_nodes.txt false
-    copy_release_file "${extract_dir}" enodes.txt false
-    copy_release_file "${extract_dir}" checkpoint_sync_urls.txt false
-    rm -rf -- "${extract_dir}"
+    tar -tzf "${archive_path}" > "${archive_listing}" \
+        || fail "Unable to inspect the network Release archive."
+    while IFS= read -r member; do
+        normalized_member="${member#./}"
+        [[ -n "${normalized_member}" ]] || continue
+        [[ "${normalized_member}" != /* && "${normalized_member}" != */* ]] \
+            || fail "The network Release contains an unsafe path: ${member}"
+        [[ "${normalized_member}" != "jwtsecret" ]] \
+            || fail "The network Release must not contain jwtsecret."
+    done < "${archive_listing}"
+    rm -f -- "${archive_listing}"
+
+    tar -xzf "${archive_path}" -C "${share_dir}" \
+        --no-same-owner --no-same-permissions \
+        || fail "Unable to extract the network Release into ${share_dir}."
 }
 
 resolve_release
 
-if [[ ! -s "${share_dir}/genesis.json" || ! -s "${share_dir}/genesis.ssz" ]]; then
+if [[ ! -s "${share_dir}/genesis.json" \
+    || ! -s "${share_dir}/genesis.ssz" \
+    || ! -s "${share_dir}/config.yaml" \
+    || ! -s "${share_dir}/config.prysm.yaml" \
+    || ! -s "${share_dir}/deposit_contract_block.txt" \
+    || ! -s "${share_dir}/bootstrap_nodes.txt" \
+    || ! -s "${share_dir}/bootstrap_nodes_execution.txt" ]]; then
     download_release
 else
     color "33" "Using existing network configuration in ${share_dir}."
 fi
 
-for required_file in genesis.json genesis.ssz jwtsecret config.yaml config.prysm.yaml; do
+for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
+    deposit_contract_block.txt bootstrap_nodes.txt bootstrap_nodes_execution.txt; do
     [[ -s "${share_dir}/${required_file}" ]] || fail "Missing required file: ${share_dir}/${required_file}"
 done
 
@@ -821,8 +842,8 @@ fi
 network_id="$(jq -r '.config.chainId' "${share_dir}/genesis.json")"
 [[ "${network_id}" =~ ^[0-9]+$ ]] || fail "Invalid chainId in genesis.json."
 bootnodes=""
-if [[ -f "${share_dir}/enodes.txt" ]]; then
-    bootnodes="$(sed -e 's/\r$//' -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*#/d' "${share_dir}/enodes.txt" | paste -sd, -)"
+if [[ -f "${share_dir}/bootstrap_nodes_execution.txt" ]]; then
+    bootnodes="$(sed -e 's/\r$//' -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*#/d' "${share_dir}/bootstrap_nodes_execution.txt" | paste -sd, -)"
 fi
 
 function download_verified_binary() {
@@ -1029,7 +1050,7 @@ function deploy_binary_node() {
         --authrpc.addr=127.0.0.1
         --authrpc.port=8551
         --authrpc.vhosts=\*
-        "--authrpc.jwtsecret=${share_dir}/jwtsecret"
+        "--authrpc.jwtsecret=${jwt_secret_file}"
         --syncmode=full
     )
     [[ "${archive_mode}" == true ]] && geth_binary_args+=(--gcmode=archive)
@@ -1048,7 +1069,7 @@ function deploy_binary_node() {
             "--chain-config-file=${share_dir}/config.prysm.yaml"
             "--genesis-state=${share_dir}/genesis.ssz"
             --execution-endpoint=http://127.0.0.1:8551
-            "--jwt-secret=${share_dir}/jwtsecret"
+            "--jwt-secret=${jwt_secret_file}"
             --contract-deployment-block=0
             --min-sync-peers=1
             --p2p-tcp-port=13000
@@ -1070,7 +1091,7 @@ function deploy_binary_node() {
             "--testnet-dir=${share_dir}"
             "--datadir=${beacon_data_dir}"
             --execution-endpoint=http://127.0.0.1:8551
-            "--execution-jwt=${share_dir}/jwtsecret"
+            "--execution-jwt=${jwt_secret_file}"
             --http
             --http-address=127.0.0.1
             --http-port=3500
@@ -1155,7 +1176,7 @@ geth_args=(
     --authrpc.addr=127.0.0.1
     --authrpc.port=8551
     --authrpc.vhosts=\*
-    --authrpc.jwtsecret=/share/jwtsecret
+    --authrpc.jwtsecret=/jwtsecret
 )
 if [[ "${archive_mode}" == true ]]; then
     geth_args+=(--syncmode=full --gcmode=archive)
@@ -1170,6 +1191,7 @@ docker run -d \
     --network host \
     -v "${geth_data_dir}:/data" \
     -v "${share_dir}:/share:ro" \
+    -v "${jwt_secret_file}:/jwtsecret:ro" \
     "${geth_image}" "${geth_args[@]}" >/dev/null
 
 mapfile -t bootstrap_args < <(
@@ -1186,7 +1208,7 @@ if [[ "${consensus_client}" == "prysm" ]]; then
         --chain-config-file=/share/config.prysm.yaml
         --genesis-state=/share/genesis.ssz
         --execution-endpoint=http://127.0.0.1:8551
-        --jwt-secret=/share/jwtsecret
+        --jwt-secret=/jwtsecret
         --contract-deployment-block=0
         --min-sync-peers=1
         --p2p-tcp-port=13000
@@ -1203,6 +1225,7 @@ if [[ "${consensus_client}" == "prysm" ]]; then
     docker run -d \
         --name "${beacon_container}" --restart unless-stopped --network host \
         -v "${beacon_data_dir}:/data" -v "${share_dir}:/share:ro" \
+        -v "${jwt_secret_file}:/jwtsecret:ro" \
         "${default_prysm_beacon_image}" "${beacon_args[@]}" >/dev/null
 else
     beacon_args=(
@@ -1210,7 +1233,7 @@ else
         --testnet-dir=/share
         --datadir=/data
         --execution-endpoint=http://127.0.0.1:8551
-        --execution-jwt=/share/jwtsecret
+        --execution-jwt=/jwtsecret
         --http
         --http-address=127.0.0.1
         --http-port=3500
@@ -1225,6 +1248,7 @@ else
     docker run -d \
         --name "${beacon_container}" --restart unless-stopped --network host \
         -v "${beacon_data_dir}:/data" -v "${share_dir}:/share:ro" \
+        -v "${jwt_secret_file}:/jwtsecret:ro" \
         "${default_lighthouse_image}" "${beacon_args[@]}" >/dev/null
 fi
 
