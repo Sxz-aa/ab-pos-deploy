@@ -26,6 +26,8 @@ Optional environment variables:
   ABPOS_NETWORK              Network template to use (default: testnet)
   GENESIS_TIMESTAMP          MIN_GENESIS_TIME; default is now plus 300 seconds
   DEPOSIT_NETWORK_NAME       Expected Deposit CLI network name (default: abcore)
+  MIN_VALIDATOR_GWEI         Minimum accepted amount (default: 32000000000)
+  MAX_VALIDATOR_GWEI         Maximum accepted amount (default: 2048000000000)
   GENESIS_GENERATOR_IMAGE    Generator image (default: ethpandaops/ethereum-genesis-generator:6.1.6)
   TARGET_TOTAL_SUPPLY_AB     Total AB supply (default: 100000000000)
   KAB_MULTIPLIER             AB represented by one staked ETH (default: 1000)
@@ -50,11 +52,12 @@ readonly template_dir="${repository_dir}/abpos/${network}/share"
 readonly expected_validator_count="${EXPECTED_VALIDATOR_COUNT:-}"
 readonly genesis_timestamp="${GENESIS_TIMESTAMP:-$(( $(date +%s) + 300 ))}"
 readonly deposit_network_name="${DEPOSIT_NETWORK_NAME:-abcore}"
+readonly min_validator_gwei="${MIN_VALIDATOR_GWEI:-32000000000}"
+readonly max_validator_gwei="${MAX_VALIDATOR_GWEI:-2048000000000}"
 readonly generator_image="${GENESIS_GENERATOR_IMAGE:-ethpandaops/ethereum-genesis-generator:6.1.6}"
 readonly target_total_supply_ab="${TARGET_TOTAL_SUPPLY_AB:-100000000000}"
 readonly kab_multiplier="${KAB_MULTIPLIER:-1000}"
 readonly premine_address="${EL_PREMINE_ADDRESS:-0x161f5Ef2C0c1Be307CFeF2E7b1411E352a3Be01B}"
-readonly prepare_script="${script_dir}/prepare-abpos-genesis-deposits.sh"
 
 for command_name in docker jq awk sort diff; do
     command -v "${command_name}" >/dev/null 2>&1 \
@@ -68,9 +71,12 @@ done
     || fail "TARGET_TOTAL_SUPPLY_AB must be a positive integer."
 [[ "${kab_multiplier}" =~ ^[1-9][0-9]*$ ]] \
     || fail "KAB_MULTIPLIER must be a positive integer."
+[[ "${min_validator_gwei}" =~ ^[0-9]+$ && "${max_validator_gwei}" =~ ^[0-9]+$ ]] \
+    || fail "Validator amount limits must be non-negative integers."
+(( min_validator_gwei <= max_validator_gwei )) \
+    || fail "MIN_VALIDATOR_GWEI must not exceed MAX_VALIDATOR_GWEI."
 [[ "${premine_address}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
     || fail "EL_PREMINE_ADDRESS is invalid: ${premine_address}"
-[[ -x "${prepare_script}" ]] || fail "Required script is not executable: ${prepare_script}"
 [[ -d "${template_dir}" ]] || fail "Network template directory not found: ${template_dir}"
 
 for required_file in genesis.json config.yaml config.prysm.yaml deposit_contract_block.txt; do
@@ -143,17 +149,84 @@ genesis_fork_version="$(
 [[ "${genesis_fork_version}" =~ ^0x[0-9a-fA-F]{8}$ ]] \
     || fail "Unable to read GENESIS_FORK_VERSION from ${runtime_config}."
 
-EXPECTED_VALIDATOR_COUNT="${expected_validator_count}" \
-GENESIS_FORK_VERSION="${genesis_fork_version}" \
-DEPOSIT_NETWORK_NAME="${deposit_network_name}" \
-    "${prepare_script}" "${deposits_dir}" "${additional_validators}"
+function prepare_genesis_deposits() {
+    local deposit_file
+    local pubkey
+    local withdrawal_credentials
+    local amount
+    local fork_version
+    local network_name
+    local normalized_pubkey
+    local expected_fork_clean="${genesis_fork_version#0x}"
+    local unique_records
+    local pubkeys_file="${runtime_dir}/deposit-pubkeys.txt"
+    local -a deposit_files
 
+    mapfile -t deposit_files < <(
+        find "${deposits_dir}" -type f -name 'deposit_data-*.json' -print | sort
+    )
+    (( ${#deposit_files[@]} > 0 )) \
+        || fail "No deposit_data-*.json files found under ${deposits_dir}."
+
+    : > "${additional_validators}"
+    : > "${pubkeys_file}"
+    total_records=0
+    total_staked_gwei=0
+
+    for deposit_file in "${deposit_files[@]}"; do
+        jq -e 'type == "array" and length > 0' "${deposit_file}" >/dev/null \
+            || fail "Deposit file must be a non-empty JSON array: ${deposit_file}"
+
+        while IFS=$'\t' read -r pubkey withdrawal_credentials amount fork_version network_name; do
+            pubkey="${pubkey#0x}"
+            withdrawal_credentials="${withdrawal_credentials#0x}"
+            fork_version="${fork_version#0x}"
+
+            [[ "${pubkey}" =~ ^[0-9a-fA-F]{96}$ ]] \
+                || fail "Invalid validator pubkey in ${deposit_file}: ${pubkey}"
+            [[ "${withdrawal_credentials}" =~ ^[0-9a-fA-F]{64}$ ]] \
+                || fail "Invalid withdrawal credentials in ${deposit_file} for ${pubkey}."
+            [[ "${amount}" =~ ^[0-9]+$ ]] \
+                || fail "Invalid deposit amount in ${deposit_file} for ${pubkey}: ${amount}"
+            (( amount >= min_validator_gwei && amount <= max_validator_gwei )) \
+                || fail "Deposit amount is outside the accepted range for ${pubkey}: ${amount}"
+            [[ "${fork_version,,}" == "${expected_fork_clean,,}" ]] \
+                || fail "Fork version mismatch for ${pubkey}: expected ${genesis_fork_version}, got ${fork_version}"
+            [[ "${network_name}" == "${deposit_network_name}" ]] \
+                || fail "Network name mismatch for ${pubkey}: expected ${deposit_network_name}, got ${network_name}"
+
+            normalized_pubkey="0x${pubkey,,}"
+            printf '%s\n' "${normalized_pubkey}" >> "${pubkeys_file}"
+            printf '%s:0x%s:%s\n' \
+                "${normalized_pubkey}" "${withdrawal_credentials,,}" "${amount}" \
+                >> "${additional_validators}"
+            total_staked_gwei=$((total_staked_gwei + amount))
+            total_records=$((total_records + 1))
+        done < <(
+            jq -r '.[] | [
+                (.pubkey // ""),
+                (.withdrawal_credentials // ""),
+                ((.amount // "") | tostring),
+                (.fork_version // ""),
+                (.network_name // "")
+            ] | @tsv' "${deposit_file}"
+        )
+    done
+
+    unique_records="$(sort -u "${pubkeys_file}" | wc -l | tr -d ' ')"
+    (( total_records == unique_records )) || fail "Duplicate validator pubkey detected."
+    [[ "${total_records}" -eq "${expected_validator_count}" ]] \
+        || fail "Validator count mismatch: expected ${expected_validator_count}, found ${total_records}."
+    chmod 600 "${additional_validators}"
+
+    printf 'Validated deposit files: %s\n' "${#deposit_files[@]}"
+    printf 'Validated validators: %s\n' "${total_records}"
+    printf 'Total stake (Gwei): %s\n' "${total_staked_gwei}"
+}
+
+total_records=0
 total_staked_gwei=0
-while IFS=: read -r _ _ validator_amount; do
-    [[ "${validator_amount}" =~ ^[1-9][0-9]*$ ]] \
-        || fail "Invalid amount in generated additional-validator input: ${validator_amount}"
-    total_staked_gwei=$((total_staked_gwei + validator_amount))
-done < "${additional_validators}"
+prepare_genesis_deposits
 (( total_staked_gwei > 0 )) || fail "Unable to calculate total genesis validator stake."
 (( total_staked_gwei % 1000000000 == 0 )) \
     || fail "Total validator stake must be a whole number of ETH."

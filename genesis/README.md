@@ -9,8 +9,7 @@ The central security boundary is simple: each Validator Operator keeps all signi
 | Script | Responsibility | Primary user | Lifecycle stage |
 | --- | --- | --- | --- |
 | `generate-abpos-validators.sh` | Generate genesis validator secrets, keystores, and deposit data | Genesis Validator Operator | Before genesis is built |
-| `prepare-abpos-genesis-deposits.sh` | Validate and combine public deposit records | Network Operator | Before genesis is built |
-| `generate-abpos-genesis.sh` | Build and verify execution and consensus genesis files | Network Operator | After deposit data is accepted |
+| `generate-abpos-genesis.sh` | Validate public deposit records, then build and verify execution and consensus genesis files | Network Operator | After deposit data is collected |
 | `ab-pos.sh` | Download a network Release and deploy Geth, a beacon node, and optionally a validator client | Node and infrastructure operators | After a Release is published |
 
 `generate-abpos-validators.sh` does not build genesis files or deploy a node. `ab-pos.sh --genesis --validator` does not generate keys; it imports the same keys that were included in the genesis validator set.
@@ -202,9 +201,9 @@ Before building genesis, validate every deposit record and the combined set:
 - The resulting genesis validator pubkeys exactly match the accepted deposit records.
 - The execution-layer premine calculation accounts for the actual total validator stake.
 
-The builder scripts in this directory implement the public-deposit portion of the validated `pos-docs` external-deposit workflow. They intentionally omit its client download, SSH deployment, runtime key import, and node-management logic.
+The Genesis builder implements the public-deposit portion of the `pos-docs` external-deposit workflow. It intentionally omits its client download, SSH deployment, runtime key import, and node-management logic.
 
-### 6.1 Prepare deposit data
+### 6.1 Collect deposit data
 
 Place each operator's accepted deposit file below one input directory. Subdirectories may be used to separate operators:
 
@@ -214,24 +213,9 @@ validator-deposits/
 `-- operator-b/deposit_data-*.json
 ```
 
-Validate and convert the records without building genesis:
-
-```bash
-EXPECTED_VALIDATOR_COUNT=2000 \
-./genesis/prepare-abpos-genesis-deposits.sh \
-  ./validator-deposits \
-  ./additional-validators.txt
-```
-
-The generated intermediate file contains one public record per line:
-
-```text
-0xPUBKEY:0xWITHDRAWAL_CREDENTIALS:AMOUNT_GWEI
-```
-
 ### 6.2 Generate genesis files
 
-The full builder calls the deposit preparation step automatically and uses the selected network files under `abpos/<network>/share` as reviewed templates:
+The builder validates and converts all collected deposit records, then uses the selected network files under `abpos/<network>/share` as reviewed templates:
 
 ```bash
 EXPECTED_VALIDATOR_COUNT=2000 \

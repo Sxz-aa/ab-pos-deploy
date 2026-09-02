@@ -38,9 +38,8 @@ check:
 	@test -x scripts/export-geth-image.sh || { echo "ERROR: scripts/export-geth-image.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/prepare-geth-release.sh || { echo "ERROR: scripts/prepare-geth-release.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/update-geth-latest.sh || { echo "ERROR: scripts/update-geth-latest.sh is missing or not executable." >&2; exit 1; }
-	@test -x genesis/prepare-abpos-genesis-deposits.sh || { echo "ERROR: genesis/prepare-abpos-genesis-deposits.sh is missing or not executable." >&2; exit 1; }
 	@test -x genesis/generate-abpos-genesis.sh || { echo "ERROR: genesis/generate-abpos-genesis.sh is missing or not executable." >&2; exit 1; }
-	@bash -n genesis/prepare-abpos-genesis-deposits.sh genesis/generate-abpos-genesis.sh
+	@bash -n genesis/generate-abpos-genesis.sh
 	@test -f docker/geth/Dockerfile || { echo "ERROR: docker/geth/Dockerfile is missing." >&2; exit 1; }
 	@compgen -G 'patches/go-ethereum/*.patch' >/dev/null || { echo "ERROR: no Geth patches found under patches/go-ethereum/." >&2; exit 1; }
 
