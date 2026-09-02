@@ -352,7 +352,7 @@ git tag -s v1.0.0 -m "AB PoS testnet v1.0.0"
 git push <github-remote> v1.0.0
 ```
 
-Pushing a `v*` tag runs the GitHub build workflow and publishes a versioned Release without making it the latest Release. Test that version explicitly, then run the **Promote AB PoS release** workflow with the same tag to promote it. The tag must reach GitHub; pushing it only to a GitLab remote does not run the workflows under `.github/workflows/`.
+Pushing a `v*` tag runs the GitHub build workflow and publishes a versioned Release without making it the latest Release. Test that version explicitly, then edit the Release and select **Set as the latest release**; the promotion workflow synchronizes the Docker `latest` tag automatically. The manual **Promote AB PoS release** workflow remains available for retries. The tag must reach GitHub; pushing it only to a GitLab remote does not run the workflows under `.github/workflows/`.
 
 ## 8. Start genesis nodes after publication
 

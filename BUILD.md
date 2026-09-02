@@ -108,7 +108,9 @@ The versioned Release can be tested explicitly with `ab-pos.sh --release <tag>`.
 
 ### Publish and promote a Release
 
-After testing the versioned Release, open GitHub Actions, select **Promote AB PoS release**, choose **Run workflow**, and enter the Network Release tag.
+After testing the versioned Release, edit it on GitHub, select **Set as the latest release**, and save it. The Release event runs the promotion workflow automatically. Publishing a previous Draft Release also triggers the workflow when that Release becomes Latest.
+
+To retry or perform the same promotion explicitly, open GitHub Actions, select **Promote AB PoS release**, choose **Run workflow**, and enter the Network Release tag.
 
 The manual workflow:
 

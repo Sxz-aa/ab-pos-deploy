@@ -7,6 +7,8 @@ on:
         description: Versioned Network Release tag to promote
         required: true
         type: string
+  release:
+    types: [published, edited]
 
 permissions:
   contents: write
@@ -22,6 +24,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -34,12 +38,22 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}
         run: |
           set -Eeuo pipefail
 
           [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
             || { printf 'ERROR: invalid Network Release tag: %s\n' "${RELEASE_TAG}" >&2; exit 1; }
+
+          if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]]; then
+            latest_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null || true)"
+            if [[ "${latest_tag}" != "${RELEASE_TAG}" ]]; then
+              printf 'promote=false\n' >>"${GITHUB_OUTPUT}"
+              printf 'Release %s was published or edited but is not Latest; Docker latest is unchanged.\n' \
+                "${RELEASE_TAG}"
+              exit 0
+            fi
+          fi
 
           release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
           [[ "$(jq -r '.tag_name' <<<"${release_json}")" == "${RELEASE_TAG}" ]] \
@@ -79,10 +93,12 @@ jobs:
             || { printf 'ERROR: Release contains more than one AB Geth version.\n' >&2; exit 1; }
 
           ab_geth_version="${!geth_versions[@]}"
+          printf 'promote=true\n' >>"${GITHUB_OUTPUT}"
           printf 'ab_geth_version=%s\n' "${ab_geth_version}" >>"${GITHUB_OUTPUT}"
           printf 'Validated %s with AB Geth %s.\n' "${RELEASE_TAG}" "${ab_geth_version}"
 
       - name: Verify immutable AB Geth image
+        if: steps.release.outputs.promote == 'true'
         env:
           AB_GETH_VERSION: ${{ steps.release.outputs.ab_geth_version }}
           GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
@@ -90,6 +106,7 @@ jobs:
           docker manifest inspect "${GETH_IMAGE}:${AB_GETH_VERSION}" >/dev/null
 
       - name: Promote GitHub Release
+        if: github.event_name == 'workflow_dispatch' && steps.release.outputs.promote == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -99,6 +116,7 @@ jobs:
             --latest
 
       - name: Point AB Geth latest to the promoted Release version
+        if: steps.release.outputs.promote == 'true'
         env:
           AB_GETH_VERSION: ${{ steps.release.outputs.ab_geth_version }}
           GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
