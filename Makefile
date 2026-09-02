@@ -29,6 +29,8 @@ testnet: check
 
 check:
 	./build.sh --check "$(NETWORK)" "$(RELEASE_PHASE)"
+	@test -x ab-pos.sh || { echo "ERROR: ab-pos.sh is missing or not executable." >&2; exit 1; }
+	@bash -n ab-pos.sh
 	@test -x scripts/prepare-geth-source.sh || { echo "ERROR: scripts/prepare-geth-source.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/build-geth.sh || { echo "ERROR: scripts/build-geth.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/build-geth-docker.sh || { echo "ERROR: scripts/build-geth-docker.sh is missing or not executable." >&2; exit 1; }

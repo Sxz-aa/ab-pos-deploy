@@ -1,6 +1,6 @@
 # AB PoS Node Deployment Guide
 
-This repository provides the public Docker deployment entry point for joining an AB PoS network. It supports Geth as the execution client and either Prysm or Lighthouse as the consensus client.
+This repository provides the public deployment entry point for joining an AB PoS network. It supports Geth as the execution client and either Prysm or Lighthouse as the consensus client. Docker is the default deployment method; native binaries are also supported.
 
 ## 1. Node types
 
@@ -24,8 +24,8 @@ Archive nodes require substantially more storage, IOPS, and synchronization time
 
 ### 2.2 Required software
 
-- Docker Engine
 - jq
+- Docker Engine for Docker deployments
 
 ## 3. Deploy a node
 
@@ -101,11 +101,25 @@ curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.
 
 This starts Geth with full synchronization and archive state retention. It does not start a validator client unless `--validator` is also specified.
 
+### 3.4 Native binary deployment
+
+Add `--binary` to any node command to download and run native client binaries instead of containers:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --binary
+```
+
+The selected Network Release supplies the patched AB Geth binary. Prysm and Lighthouse binaries are downloaded from their official GitHub Releases. When a non-genesis validator needs new keys, the EthStaker Deposit CLI binary is downloaded from its official GitHub Release. Client binaries are verified before installation under `/data/abpos/<network>/bin/`.
+
+Binary processes run in detached sessions and write logs under `/data/abpos/<network>/logs/`. They are not configured to start automatically after a server reboot.
+
 ## 4. Node operations
 
 Use the same network and consensus client that were selected during installation.
 
-Show container and synchronization status:
+For a binary deployment, include `--binary` in each operation command. Without it, operations target the default Docker deployment.
+
+Show node and synchronization status:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --status
@@ -147,8 +161,8 @@ The first version of `ab-pos.sh` has the following known boundaries:
 - It does not submit on-chain validator deposits.
 - It does not generate checkpoints.
 - It does not deploy monitoring, a reverse proxy, TLS, or firewall rules.
-- `--binary` is reserved and not implemented.
 - A missing Release checksum produces a warning rather than a hard failure.
 - It does not back up or migrate slashing protection data.
-- Fixed container names and ports prevent multiple instances of the same network on one host.
+- Fixed service identities and ports prevent multiple instances of the same network on one host.
+- Binary deployments do not automatically start after a server reboot.
 - End-to-end production testing is still required for each supported client and node mode.
