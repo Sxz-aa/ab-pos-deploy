@@ -366,11 +366,17 @@ function replace_role_containers() {
     local role="$1"
     shift
     local container_name
+    local stop_timeout=30
+
+    [[ "${role}" != execution ]] || stop_timeout=120
 
     while IFS= read -r container_name; do
         [[ -n "${container_name}" ]] || continue
         color "34" "Replacing ${role} container ${container_name}."
-        docker rm -f "${container_name}" >/dev/null
+        if [[ "$(docker container inspect "${container_name}" --format '{{.State.Running}}')" == true ]]; then
+            docker stop --time "${stop_timeout}" "${container_name}" >/dev/null
+        fi
+        docker rm "${container_name}" >/dev/null
     done < <(containers_for_role "${role}" "$@")
 }
 
@@ -1481,6 +1487,37 @@ function import_lighthouse_keys_binary() {
         "--directory=${keys_dir}" --reuse-password "--password-file=${password_file}"
 }
 
+function chain_config_files_match() {
+    local stored_genesis="$1"
+    local release_genesis="$2"
+
+    jq -e '.config | type == "object"' "${stored_genesis}" >/dev/null || return 2
+    jq -e '.config | type == "object"' "${release_genesis}" >/dev/null || return 2
+    [[ "$(jq -cS '.config' "${stored_genesis}")" \
+        == "$(jq -cS '.config' "${release_genesis}")" ]]
+}
+
+function geth_binary_chain_config_matches_release() {
+    local stored_genesis
+    local dump_log
+    local status=0
+
+    stored_genesis="$(mktemp "${data_dir}/.stored-genesis.XXXXXX")"
+    dump_log="$(mktemp "${data_dir}/.dumpgenesis.XXXXXX")"
+    if ! "${bin_dir}/geth" "--datadir=${geth_data_dir}" dumpgenesis \
+        >"${stored_genesis}" 2>"${dump_log}"; then
+        cat "${dump_log}" >&2
+        rm -f -- "${stored_genesis}" "${dump_log}"
+        fail "Unable to read the existing Geth genesis configuration; refusing to reinitialize it."
+    fi
+    rm -f -- "${dump_log}"
+    chain_config_files_match "${stored_genesis}" "${share_dir}/genesis.json" || status=$?
+    rm -f -- "${stored_genesis}"
+    (( status <= 1 )) \
+        || fail "Unable to compare the stored and Release Geth chain configurations."
+    return "${status}"
+}
+
 function deploy_binary_node() {
     local service
     local lighthouse_bootnodes
@@ -1500,12 +1537,15 @@ function deploy_binary_node() {
         stop_binary_service "${service}"
     done
 
-    if [[ -d "${geth_data_dir}/geth/chaindata" ]]; then
-        color "34" "Updating Geth chain configuration from genesis.json."
-    else
+    if [[ ! -d "${geth_data_dir}/geth/chaindata" ]]; then
         color "34" "Initializing Geth from genesis.json."
+        "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
+    elif geth_binary_chain_config_matches_release; then
+        color "32" "Geth chain configuration is unchanged; skipping init."
+    else
+        color "34" "Updating Geth chain configuration from genesis.json."
+        "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
     fi
-    "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
 
     geth_binary_args=(
         "--datadir=${geth_data_dir}"
@@ -1623,17 +1663,47 @@ if [[ "${deployment_mode}" == "binary" ]]; then
     exit 0
 fi
 
+function geth_chain_config_matches_release() {
+    local stored_genesis
+    local dump_log
+    local status=0
+
+    stored_genesis="$(mktemp "${data_dir}/.stored-genesis.XXXXXX")"
+    dump_log="$(mktemp "${data_dir}/.dumpgenesis.XXXXXX")"
+    if ! docker run --rm \
+        -v "${geth_data_dir}:/data" \
+        "${geth_image}" \
+        --datadir=/data dumpgenesis >"${stored_genesis}" 2>"${dump_log}"; then
+        cat "${dump_log}" >&2
+        rm -f -- "${stored_genesis}" "${dump_log}"
+        fail "Unable to read the existing Geth genesis configuration; refusing to reinitialize it."
+    fi
+    rm -f -- "${dump_log}"
+    chain_config_files_match "${stored_genesis}" "${share_dir}/genesis.json" || status=$?
+    rm -f -- "${stored_genesis}"
+    (( status <= 1 )) \
+        || fail "Unable to compare the stored and Release Geth chain configurations."
+    return "${status}"
+}
+
 replace_role_containers execution "${geth_data_dir}"
-if [[ -d "${geth_data_dir}/geth/chaindata" ]]; then
-    color "34" "Updating Geth chain configuration from genesis.json."
-else
+if [[ ! -d "${geth_data_dir}/geth/chaindata" ]]; then
     color "34" "Initializing Geth from genesis.json."
+    docker run --rm \
+        -v "${geth_data_dir}:/data" \
+        -v "${share_dir}:/share:ro" \
+        "${geth_image}" \
+        --datadir=/data init /share/genesis.json
+elif geth_chain_config_matches_release; then
+    color "32" "Geth chain configuration is unchanged; skipping init."
+else
+    color "34" "Updating Geth chain configuration from genesis.json."
+    docker run --rm \
+        -v "${geth_data_dir}:/data" \
+        -v "${share_dir}:/share:ro" \
+        "${geth_image}" \
+        --datadir=/data init /share/genesis.json
 fi
-docker run --rm \
-    -v "${geth_data_dir}:/data" \
-    -v "${share_dir}:/share:ro" \
-    "${geth_image}" \
-    --datadir=/data init /share/genesis.json
 geth_args=(
     --datadir=/data
     "--networkid=${network_id}"
