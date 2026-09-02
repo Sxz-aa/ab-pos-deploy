@@ -134,7 +134,9 @@ function install_missing_dependencies() {
         command -v setsid >/dev/null 2>&1 || packages+=(util-linux)
     fi
 
-    (( ${#packages[@]} > 0 )) || return
+    if (( ${#packages[@]} == 0 )); then
+        return 0
+    fi
     [[ "$(uname -s)" == "Linux" ]] || fail "Automatic dependency installation supports Linux only."
     command -v apt-get >/dev/null 2>&1 \
         || fail "Missing dependencies: ${packages[*]}. Install them and run the command again."
