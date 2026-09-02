@@ -638,6 +638,9 @@ function download_release() {
     local archive_listing
     local checksum_url
     local checksum_path
+    local previous_share_dir
+    local required_file
+    local temporary_share_dir
     local member
     local normalized_member
 
@@ -670,24 +673,38 @@ function download_release() {
     done < "${archive_listing}"
     rm -f -- "${archive_listing}"
 
-    tar -xzf "${archive_path}" -C "${share_dir}" \
-        --no-same-owner --no-same-permissions \
-        || fail "Unable to extract the network Release into ${share_dir}."
+    temporary_share_dir="$(mktemp -d "${data_dir}/share-release.XXXXXX")"
+    if ! tar -xzf "${archive_path}" -C "${temporary_share_dir}" \
+        --no-same-owner --no-same-permissions; then
+        rm -rf -- "${temporary_share_dir}"
+        fail "Unable to extract the network Release."
+    fi
+
+    for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
+        deposit_contract_block.txt bootstrap_nodes.txt bootstrap_nodes_execution.txt; do
+        if [[ ! -s "${temporary_share_dir}/${required_file}" ]]; then
+            rm -rf -- "${temporary_share_dir}"
+            fail "The network Release is missing required file: ${required_file}"
+        fi
+    done
+
+    previous_share_dir="$(mktemp -d "${data_dir}/.share.previous.XXXXXX")"
+    rmdir -- "${previous_share_dir}"
+    if ! mv -- "${share_dir}" "${previous_share_dir}"; then
+        rm -rf -- "${temporary_share_dir}"
+        fail "Unable to prepare ${share_dir} for the network Release update."
+    fi
+    if ! mv -- "${temporary_share_dir}" "${share_dir}"; then
+        mv -- "${previous_share_dir}" "${share_dir}" || true
+        rm -rf -- "${temporary_share_dir}"
+        fail "Unable to activate the downloaded network Release."
+    fi
+    rm -rf -- "${previous_share_dir}"
+    color "32" "Updated network configuration in ${share_dir}."
 }
 
 resolve_release
-
-if [[ ! -s "${share_dir}/genesis.json" \
-    || ! -s "${share_dir}/genesis.ssz" \
-    || ! -s "${share_dir}/config.yaml" \
-    || ! -s "${share_dir}/config.prysm.yaml" \
-    || ! -s "${share_dir}/deposit_contract_block.txt" \
-    || ! -s "${share_dir}/bootstrap_nodes.txt" \
-    || ! -s "${share_dir}/bootstrap_nodes_execution.txt" ]]; then
-    download_release
-else
-    color "33" "Using existing network configuration in ${share_dir}."
-fi
+download_release
 
 for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
     deposit_contract_block.txt bootstrap_nodes.txt bootstrap_nodes_execution.txt; do
@@ -1096,10 +1113,12 @@ function deploy_binary_node() {
         stop_binary_service "${service}"
     done
 
-    if [[ ! -d "${geth_data_dir}/geth/chaindata" ]]; then
+    if [[ -d "${geth_data_dir}/geth/chaindata" ]]; then
+        color "34" "Updating Geth chain configuration from genesis.json."
+    else
         color "34" "Initializing Geth from genesis.json."
-        "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
     fi
+    "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
 
     geth_binary_args=(
         "--datadir=${geth_data_dir}"
@@ -1217,16 +1236,17 @@ if [[ "${deployment_mode}" == "binary" ]]; then
     exit 0
 fi
 
-if [[ ! -d "${geth_data_dir}/geth/chaindata" ]]; then
-    color "34" "Initializing Geth from genesis.json."
-    docker run --rm \
-        -v "${geth_data_dir}:/data" \
-        -v "${share_dir}:/share:ro" \
-        "${geth_image}" \
-        --datadir=/data init /share/genesis.json
-fi
-
 docker rm -f "${geth_container}" >/dev/null 2>&1 || true
+if [[ -d "${geth_data_dir}/geth/chaindata" ]]; then
+    color "34" "Updating Geth chain configuration from genesis.json."
+else
+    color "34" "Initializing Geth from genesis.json."
+fi
+docker run --rm \
+    -v "${geth_data_dir}:/data" \
+    -v "${share_dir}:/share:ro" \
+    "${geth_image}" \
+    --datadir=/data init /share/genesis.json
 geth_args=(
     --datadir=/data
     "--networkid=${network_id}"
