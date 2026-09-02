@@ -1,4 +1,4 @@
-name: Build and publish AB PoS release
+name: Build AB PoS release draft
 
 on:
   push:
@@ -42,16 +42,11 @@ jobs:
         run: |
           ./scripts/prepare-geth-release.sh
 
-      - name: Update AB Geth latest tag
-        env:
-          GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
-        run: |
-          ./scripts/update-geth-latest.sh
-
-      - name: Publish GitHub Release assets
+      - name: Create GitHub Release draft
         uses: softprops/action-gh-release@v3
         with:
-          make_latest: true
+          draft: true
+          make_latest: false
           fail_on_unmatched_files: true
           files: |
             build/abpos-*.tar.gz

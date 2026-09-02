@@ -1,0 +1,108 @@
+name: Publish AB PoS release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Network Release tag to publish and promote
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: ab-pos-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate Release artifacts
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -Eeuo pipefail
+
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
+            || { printf 'ERROR: invalid Network Release tag: %s\n' "${RELEASE_TAG}" >&2; exit 1; }
+
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
+          [[ "$(jq -r '.tag_name' <<<"${release_json}")" == "${RELEASE_TAG}" ]] \
+            || { printf 'ERROR: Release tag does not match %s.\n' "${RELEASE_TAG}" >&2; exit 1; }
+
+          mapfile -t network_archives < <(
+            jq -r --arg tag "${RELEASE_TAG}" '
+              .assets[].name
+              | select(startswith("abpos-"))
+              | select(endswith("-" + $tag + ".tar.gz"))
+            ' <<<"${release_json}"
+          )
+          [[ "${#network_archives[@]}" -eq 1 ]] \
+            || { printf 'ERROR: expected one Network archive for %s; found %s.\n' \
+              "${RELEASE_TAG}" "${#network_archives[@]}" >&2; exit 1; }
+          jq -e --arg name "${network_archives[0]}.sha256" \
+            'any(.assets[]; .name == $name)' <<<"${release_json}" >/dev/null \
+            || { printf 'ERROR: missing checksum for %s.\n' "${network_archives[0]}" >&2; exit 1; }
+
+          mapfile -t geth_binaries < <(
+            jq -r '.assets[].name' <<<"${release_json}" \
+              | sed -nE 's/^ab-geth-(v[0-9]+\.[0-9]+\.[0-9]+-ab\.[1-9][0-9]*)-linux-(amd64|arm64)$/\1 &/p'
+          )
+          [[ "${#geth_binaries[@]}" -ge 1 ]] \
+            || { printf 'ERROR: Release does not contain an AB Geth binary.\n' >&2; exit 1; }
+
+          declare -A geth_versions=()
+          for entry in "${geth_binaries[@]}"; do
+            version="${entry%% *}"
+            asset="${entry#* }"
+            geth_versions["${version}"]=1
+            jq -e --arg name "${asset}.sha256" \
+              'any(.assets[]; .name == $name)' <<<"${release_json}" >/dev/null \
+              || { printf 'ERROR: missing checksum for %s.\n' "${asset}" >&2; exit 1; }
+          done
+          [[ "${#geth_versions[@]}" -eq 1 ]] \
+            || { printf 'ERROR: Release contains more than one AB Geth version.\n' >&2; exit 1; }
+
+          ab_geth_version="${!geth_versions[@]}"
+          printf 'ab_geth_version=%s\n' "${ab_geth_version}" >>"${GITHUB_OUTPUT}"
+          printf 'Validated %s with AB Geth %s.\n' "${RELEASE_TAG}" "${ab_geth_version}"
+
+      - name: Verify immutable AB Geth image
+        env:
+          AB_GETH_VERSION: ${{ steps.release.outputs.ab_geth_version }}
+          GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
+        run: |
+          docker manifest inspect "${GETH_IMAGE}:${AB_GETH_VERSION}" >/dev/null
+
+      - name: Publish and promote GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release edit "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft=false \
+            --prerelease=false \
+            --latest
+
+      - name: Point AB Geth latest to the promoted Release version
+        env:
+          AB_GETH_VERSION: ${{ steps.release.outputs.ab_geth_version }}
+          GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
+        run: |
+          ./scripts/update-geth-latest.sh

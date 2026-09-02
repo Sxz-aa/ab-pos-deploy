@@ -14,13 +14,6 @@ function fail() {
     exit 1
 }
 
-function version_is_greater() {
-    local candidate="$1"
-    local current="$2"
-    [[ "$(printf '%s\n%s\n' "${candidate}" "${current}" | sort -V | tail -n 1)" == "${candidate}" \
-        && "${candidate}" != "${current}" ]]
-}
-
 command -v docker >/dev/null 2>&1 || fail "Docker Engine is required"
 [[ "${ab_geth_version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-ab\.[1-9][0-9]*$ ]] \
     || fail "AB_GETH_VERSION is invalid: ${ab_geth_version}"
@@ -52,11 +45,9 @@ if [[ "${ab_geth_version}" == "${current_version}" ]]; then
     [[ "${candidate_id}" == "${latest_id}" ]] \
         || fail "${latest_ref} and ${image_ref} claim the same version but have different image IDs"
     printf '%s already points to %s\n' "${latest_ref}" "${ab_geth_version}"
-elif version_is_greater "${ab_geth_version}" "${current_version}"; then
-    printf 'Updating %s from %s to %s\n' "${latest_ref}" "${current_version}" "${ab_geth_version}"
+else
+    printf 'Updating %s from %s to promoted version %s\n' \
+        "${latest_ref}" "${current_version}" "${ab_geth_version}"
     docker tag "${image_ref}" "${latest_ref}"
     docker push "${latest_ref}"
-else
-    printf 'Keeping %s at %s; candidate %s is older.\n' \
-        "${latest_ref}" "${current_version}" "${ab_geth_version}"
 fi
