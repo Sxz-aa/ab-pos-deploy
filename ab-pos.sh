@@ -589,8 +589,12 @@ function show_consensus_status() {
 
     head_slot="$(jq -r '.data.head_slot // "unknown"' <<<"${sync_response}")"
     sync_distance="$(jq -r '.data.sync_distance // "unknown"' <<<"${sync_response}")"
-    is_syncing="$(jq -r '.data.is_syncing // "unknown"' <<<"${sync_response}")"
-    is_optimistic="$(jq -r '.data.is_optimistic // "unknown"' <<<"${sync_response}")"
+    is_syncing="$(jq -r \
+        'if (.data | has("is_syncing")) then .data.is_syncing else "unknown" end' \
+        <<<"${sync_response}")"
+    is_optimistic="$(jq -r \
+        'if (.data | has("is_optimistic")) then .data.is_optimistic else "unknown" end' \
+        <<<"${sync_response}")"
 
     printf '\nConsensus:\n'
     printf '  Head slot: %s\n' "${head_slot}"
