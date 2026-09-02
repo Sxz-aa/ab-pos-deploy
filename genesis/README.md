@@ -14,39 +14,14 @@ The central security boundary is simple: each Validator Operator keeps all signi
 
 `generate-abpos-validators.sh` does not build genesis files or deploy a node. `ab-pos.sh --genesis --validator` does not generate keys; it imports the same keys that were included in the genesis validator set.
 
-## 2. Roles
+## 2. Who does what
 
-### 2.1 Network Operator
+| Participant | Responsibility |
+| --- | --- |
+| Genesis Validator Operator | Generate and back up validator keys, then send only `deposit_data-*.json` to the Network Operator. After the Release is published, start one validator client with the original keys. |
+| Network Operator | Collect and validate deposit data, build and publish the Genesis Release, start the initial network nodes, and publish checkpoint URLs after finalization. |
 
-The Network Operator coordinates public network material:
-
-- Collect `deposit_data-*.json` from all Genesis Validator Operators.
-- Validate record format, network parameters, validator counts, amounts, and duplicate pubkeys.
-- Build the final `genesis.json` and `genesis.ssz` with an audited genesis toolchain.
-- Prepare Prysm and Lighthouse chain configuration.
-- Collect stable Geth enodes and beacon ENRs.
-- Start initial RPC and bootnodes.
-- Publish a verifiable Genesis Release and its SHA256 checksum.
-- Publish trusted checkpoint providers after the network finalizes.
-
-The Network Operator must not request or retain another operator's mnemonic, password, keystores, validator signing keys, or slashing protection database.
-
-### 2.2 Genesis Validator Operator
-
-Each Genesis Validator Operator:
-
-- Generates and backs up its own mnemonic.
-- Keeps its password and keystores private.
-- Sends only deposit data to the Network Operator before genesis.
-- Verifies the published network Release.
-- Imports the same genesis keystores into exactly one validator client.
-- Preserves and backs up slashing protection data.
-
-### 2.3 Infrastructure Operator
-
-An Infrastructure Operator runs public RPC, archive, beacon, checkpoint, monitoring, or explorer services. This role does not require validator keys and does not necessarily participate in staking.
-
-Roles describe responsibility; node types describe software. One organization may perform more than one role without merging their security boundaries.
+The Network Operator never needs another operator's mnemonic, password, keystores, signing keys, or slashing protection data.
 
 ## 3. End-to-end genesis flow
 
@@ -160,7 +135,7 @@ ABPOS_ROOT_PATH=/data/abpos/operator-a \
 
 Run `./generate-abpos-validators.sh --help` for the complete interface.
 
-### 4.5 Idempotency and safety behavior
+### 4.5 Safe reruns
 
 The generator:
 
