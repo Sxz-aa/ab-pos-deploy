@@ -311,9 +311,9 @@ fee_recipient_file="${data_dir}/fee-recipient.txt"
 validator_password_reference_file="${data_dir}/validator-password-file.txt"
 
 container_prefix="abpos-${network}"
-geth_container="${container_prefix}-geth"
-beacon_container="${container_prefix}-${consensus_client}"
-validator_container="${container_prefix}-${consensus_client}-validator"
+geth_container="${container_prefix}-execution"
+beacon_container="${container_prefix}-consensus"
+validator_container="${container_prefix}-validator"
 
 function container_exists() {
     docker container inspect "$1" >/dev/null 2>&1
@@ -328,29 +328,70 @@ function container_mounts_host_path() {
         | grep -Fx -- "${host_path}" >/dev/null
 }
 
-function remove_legacy_container() {
-    local container_name="$1"
-    local expected_host_path="$2"
+function containers_for_role() {
+    local role="$1"
+    shift
+    local container_id
+    local container_name
+    local host_path
+    local matched
+    local -A emitted=()
 
-    container_exists "${container_name}" || return 0
-    if ! container_mounts_host_path "${container_name}" "${expected_host_path}"; then
-        fail "Legacy container ${container_name} exists but does not use ${expected_host_path}; refusing to remove it."
+    while IFS= read -r container_id; do
+        [[ -n "${container_id}" ]] || continue
+        matched=false
+        if [[ "$(docker container inspect "${container_id}" \
+            --format '{{index .Config.Labels "io.abpos.network"}}:{{index .Config.Labels "io.abpos.role"}}' 2>/dev/null)" \
+            == "${network}:${role}" ]]; then
+            matched=true
+        else
+            for host_path in "$@"; do
+                if container_mounts_host_path "${container_id}" "${host_path}"; then
+                    matched=true
+                    break
+                fi
+            done
+        fi
+        [[ "${matched}" == true ]] || continue
+        container_name="$(docker container inspect "${container_id}" --format '{{.Name}}' 2>/dev/null)"
+        container_name="${container_name#/}"
+        if [[ -n "${container_name}" && -z "${emitted[${container_name}]:-}" ]]; then
+            printf '%s\n' "${container_name}"
+            emitted["${container_name}"]=1
+        fi
+    done < <(docker container ls -aq)
+}
+
+function replace_role_containers() {
+    local role="$1"
+    shift
+    local container_name
+
+    while IFS= read -r container_name; do
+        [[ -n "${container_name}" ]] || continue
+        color "34" "Replacing ${role} container ${container_name}."
+        docker rm -f "${container_name}" >/dev/null
+    done < <(containers_for_role "${role}" "$@")
+}
+
+function existing_role_container() {
+    local preferred_name="$1"
+    local role="$2"
+    shift 2
+    local container_name
+
+    if container_exists "${preferred_name}"; then
+        printf '%s\n' "${preferred_name}"
+        return 0
     fi
-    color "34" "Replacing legacy container ${container_name}."
-    docker rm -f "${container_name}" >/dev/null
+    container_name="$(containers_for_role "${role}" "$@" | head -n 1)"
+    [[ -n "${container_name}" ]] && printf '%s\n' "${container_name}"
 }
 
 function existing_validator_container() {
-    local candidate
-
     [[ "${deployment_mode}" == "docker" ]] || return 0
-    for candidate in "${validator_container}" abpos-validator; do
-        if container_exists "${candidate}" \
-            && container_mounts_host_path "${candidate}" "${validator_data_dir}"; then
-            printf '%s\n' "${candidate}"
-            return 0
-        fi
-    done
+    existing_role_container "${validator_container}" validator \
+        "${data_dir}/prysm-validator" "${data_dir}/lighthouse-validator"
 }
 
 function validator_keys_are_imported() {
@@ -470,28 +511,64 @@ function show_sync_status() {
 }
 
 function show_docker_status() {
-    docker ps -a --filter "name=^/${container_prefix}-" \
-        --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+    local container_name
+    local -A shown=()
+
+    printf '%-30s %-45s %s\n' NAMES IMAGE STATUS
+    while IFS= read -r container_name; do
+        [[ -n "${container_name}" && -z "${shown[${container_name}]:-}" ]] || continue
+        docker container inspect "${container_name}" \
+            --format '{{printf "%-30s %-45s %s" .Name .Config.Image .State.Status}}' \
+            | sed 's#^/##'
+        shown["${container_name}"]=1
+    done < <(
+        containers_for_role execution "${geth_data_dir}"
+        containers_for_role consensus "${data_dir}/prysm" "${data_dir}/lighthouse"
+        containers_for_role validator "${data_dir}/prysm-validator" "${data_dir}/lighthouse-validator"
+    )
     show_sync_status
 }
 
 function operate_existing_docker_node() {
+    local runtime_geth_container
+    local runtime_beacon_container
+    local runtime_validator_container
+    local -a runtime_containers=()
+
+    runtime_geth_container="$(existing_role_container "${geth_container}" execution "${geth_data_dir}")"
+    runtime_beacon_container="$(existing_role_container "${beacon_container}" consensus \
+        "${data_dir}/prysm" "${data_dir}/lighthouse")"
+    runtime_validator_container="$(existing_role_container "${validator_container}" validator \
+        "${data_dir}/prysm-validator" "${data_dir}/lighthouse-validator")"
+
     case "${operation}" in
         status) show_docker_status ;;
         stop)
-            docker stop "${validator_container}" "${beacon_container}" "${geth_container}" 2>/dev/null || true
+            [[ -z "${runtime_validator_container}" ]] || runtime_containers+=("${runtime_validator_container}")
+            [[ -z "${runtime_beacon_container}" ]] || runtime_containers+=("${runtime_beacon_container}")
+            [[ -z "${runtime_geth_container}" ]] || runtime_containers+=("${runtime_geth_container}")
+            [[ "${#runtime_containers[@]}" -eq 0 ]] || docker stop "${runtime_containers[@]}"
             ;;
         restart)
-            docker restart "${geth_container}" "${beacon_container}" 2>/dev/null || true
-            if container_exists "${validator_container}"; then
-                docker restart "${validator_container}"
-            fi
+            [[ -z "${runtime_geth_container}" ]] || runtime_containers+=("${runtime_geth_container}")
+            [[ -z "${runtime_beacon_container}" ]] || runtime_containers+=("${runtime_beacon_container}")
+            [[ -z "${runtime_validator_container}" ]] || runtime_containers+=("${runtime_validator_container}")
+            [[ "${#runtime_containers[@]}" -eq 0 ]] || docker restart "${runtime_containers[@]}"
             ;;
         logs)
             case "${log_service:-beacon}" in
-                geth) docker logs -f --tail 200 "${geth_container}" ;;
-                beacon | prysm | lighthouse) docker logs -f --tail 200 "${beacon_container}" ;;
-                validator) docker logs -f --tail 200 "${validator_container}" ;;
+                geth)
+                    [[ -n "${runtime_geth_container}" ]] || fail "Execution container was not found."
+                    docker logs -f --tail 200 "${runtime_geth_container}"
+                    ;;
+                beacon | prysm | lighthouse)
+                    [[ -n "${runtime_beacon_container}" ]] || fail "Consensus container was not found."
+                    docker logs -f --tail 200 "${runtime_beacon_container}"
+                    ;;
+                validator)
+                    [[ -n "${runtime_validator_container}" ]] || fail "Validator container was not found."
+                    docker logs -f --tail 200 "${runtime_validator_container}"
+                    ;;
                 *) fail "Unknown log service: ${log_service}" ;;
             esac
             ;;
@@ -1411,8 +1488,7 @@ if [[ "${deployment_mode}" == "binary" ]]; then
     exit 0
 fi
 
-remove_legacy_container abpos-geth "${geth_data_dir}"
-docker rm -f "${geth_container}" >/dev/null 2>&1 || true
+replace_role_containers execution "${geth_data_dir}"
 if [[ -d "${geth_data_dir}/geth/chaindata" ]]; then
     color "34" "Updating Geth chain configuration from genesis.json."
 else
@@ -1445,6 +1521,8 @@ fi
 
 docker run -d \
     --name "${geth_container}" \
+    --label "io.abpos.network=${network}" \
+    --label "io.abpos.role=execution" \
     --restart unless-stopped \
     --network host \
     -v "${geth_data_dir}:/data" \
@@ -1458,8 +1536,7 @@ mapfile -t bootstrap_args < <(
     fi
 )
 
-remove_legacy_container "abpos-${consensus_client}" "${beacon_data_dir}"
-docker rm -f "${beacon_container}" >/dev/null 2>&1 || true
+replace_role_containers consensus "${data_dir}/prysm" "${data_dir}/lighthouse"
 if [[ "${consensus_client}" == "prysm" ]]; then
     beacon_args=(
         --accept-terms-of-use=true
@@ -1482,7 +1559,11 @@ if [[ "${consensus_client}" == "prysm" ]]; then
         beacon_args+=("--bootstrap-node=${enr}")
     done
     docker run -d \
-        --name "${beacon_container}" --restart unless-stopped --network host \
+        --name "${beacon_container}" \
+        --label "io.abpos.network=${network}" \
+        --label "io.abpos.role=consensus" \
+        --label "io.abpos.consensus-client=${consensus_client}" \
+        --restart unless-stopped --network host \
         -v "${beacon_data_dir}:/data" -v "${share_dir}:/share:ro" \
         -v "${jwt_secret_file}:/jwtsecret:ro" \
         "${default_prysm_beacon_image}" "${beacon_args[@]}" >/dev/null
@@ -1505,7 +1586,11 @@ else
         beacon_args+=("--boot-nodes=${lighthouse_bootnodes}")
     fi
     docker run -d \
-        --name "${beacon_container}" --restart unless-stopped --network host \
+        --name "${beacon_container}" \
+        --label "io.abpos.network=${network}" \
+        --label "io.abpos.role=consensus" \
+        --label "io.abpos.consensus-client=${consensus_client}" \
+        --restart unless-stopped --network host \
         -v "${beacon_data_dir}:/data" -v "${share_dir}:/share:ro" \
         -v "${jwt_secret_file}:/jwtsecret:ro" \
         "${default_lighthouse_image}" "${beacon_args[@]}" >/dev/null
@@ -1565,12 +1650,16 @@ function import_lighthouse_keys() {
 }
 
 if [[ "${validator_mode}" == true ]]; then
-    remove_legacy_container abpos-validator "${validator_data_dir}"
-    docker rm -f "${validator_container}" >/dev/null 2>&1 || true
+    replace_role_containers validator \
+        "${data_dir}/prysm-validator" "${data_dir}/lighthouse-validator"
     if [[ "${consensus_client}" == "prysm" ]]; then
         import_prysm_keys
         docker run -d \
-            --name "${validator_container}" --restart unless-stopped --network host \
+            --name "${validator_container}" \
+            --label "io.abpos.network=${network}" \
+            --label "io.abpos.role=validator" \
+            --label "io.abpos.consensus-client=${consensus_client}" \
+            --restart unless-stopped --network host \
             -v "${validator_data_dir}:/wallet" \
             -v "${share_dir}:/share:ro" \
             -v "${password_file}:/password.txt:ro" \
@@ -1583,7 +1672,11 @@ if [[ "${validator_mode}" == true ]]; then
     else
         import_lighthouse_keys
         docker run -d \
-            --name "${validator_container}" --restart unless-stopped --network host \
+            --name "${validator_container}" \
+            --label "io.abpos.network=${network}" \
+            --label "io.abpos.role=validator" \
+            --label "io.abpos.consensus-client=${consensus_client}" \
+            --restart unless-stopped --network host \
             -v "${validator_data_dir}:/validator-data" \
             -v "${share_dir}:/share:ro" \
             "${default_lighthouse_image}" \
