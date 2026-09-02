@@ -152,16 +152,3 @@ curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.
 | Prysm RPC | `127.0.0.1` | 4000 | TCP | Used by the Prysm validator client |
 
 Allow the public P2P ports through the host firewall. Keep loopback-only APIs private unless an authenticated access-control layer protects them.
-
-## 6. Current limitations
-
-The first version of `ab-pos.sh` has the following known boundaries:
-
-- It does not submit on-chain validator deposits.
-- It does not generate checkpoints.
-- It does not deploy monitoring, a reverse proxy, TLS, or firewall rules.
-- A missing Release checksum produces a warning rather than a hard failure.
-- It does not back up or migrate slashing protection data.
-- Fixed service identities and ports prevent multiple instances of the same network on one host.
-- Binary deployments do not automatically start after a server reboot.
-- End-to-end production testing is still required for each supported client and node mode.

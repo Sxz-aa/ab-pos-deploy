@@ -339,7 +339,20 @@ sudo ./ab-pos.sh testnet prysm geth --restart
 
 For binary deployments, include `--binary` in both commands.
 
-## 8. Before production use
+## 8. Current limitations
+
+`ab-pos.sh` has the following known boundaries:
+
+- It does not submit on-chain validator deposits.
+- It does not generate checkpoints.
+- It does not deploy monitoring, a reverse proxy, TLS, or firewall rules.
+- A missing Release checksum produces a warning rather than a hard failure.
+- It does not back up or migrate slashing protection data.
+- Fixed service identities and ports prevent multiple instances of the same network on one host.
+- Binary deployments do not automatically start after a server reboot.
+- End-to-end production testing is still required for each supported client and node mode.
+
+## 9. Before production use
 
 - Pin and review the Network Release tag.
 - Verify the archive and AB Geth checksums.
