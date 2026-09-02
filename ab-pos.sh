@@ -101,6 +101,66 @@ function require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
 }
 
+function install_missing_dependencies() {
+    local command_name
+    local needs_coreutils=false
+    local -a packages=()
+
+    for command_name in curl find jq openssl tar; do
+        if command -v "${command_name}" >/dev/null 2>&1; then
+            continue
+        fi
+        case "${command_name}" in
+            curl) packages+=(curl) ;;
+            find) packages+=(findutils) ;;
+            jq) packages+=(jq) ;;
+            openssl) packages+=(openssl) ;;
+            tar) packages+=(tar) ;;
+        esac
+    done
+
+    for command_name in install sha256sum; do
+        command -v "${command_name}" >/dev/null 2>&1 || needs_coreutils=true
+    done
+    [[ "${needs_coreutils}" == false ]] || packages+=(coreutils)
+
+    if [[ ! -s /etc/ssl/certs/ca-certificates.crt ]]; then
+        packages+=(ca-certificates)
+    fi
+
+    if [[ "${deployment_mode}" == "docker" ]]; then
+        command -v docker >/dev/null 2>&1 || packages+=(docker.io)
+    else
+        command -v setsid >/dev/null 2>&1 || packages+=(util-linux)
+    fi
+
+    (( ${#packages[@]} > 0 )) || return
+    [[ "$(uname -s)" == "Linux" ]] || fail "Automatic dependency installation supports Linux only."
+    command -v apt-get >/dev/null 2>&1 \
+        || fail "Missing dependencies: ${packages[*]}. Install them and run the command again."
+    (( EUID == 0 )) \
+        || fail "Missing dependencies: ${packages[*]}. Run the installer with sudo."
+
+    color "34" "Installing required packages: ${packages[*]}"
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+}
+
+function ensure_docker_available() {
+    docker info >/dev/null 2>&1 && return
+
+    if (( EUID == 0 )); then
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl enable --now docker >/dev/null 2>&1 || true
+        elif command -v service >/dev/null 2>&1; then
+            service docker start >/dev/null 2>&1 || true
+        fi
+    fi
+
+    docker info >/dev/null 2>&1 \
+        || fail "Docker is unavailable or permission was denied."
+}
+
 function require_address() {
     local name="$1"
     local value="$2"
@@ -438,6 +498,8 @@ if [[ "${operation}" != "install" ]]; then
     exit 0
 fi
 
+install_missing_dependencies
+
 require_command curl
 require_command find
 require_command jq
@@ -447,7 +509,7 @@ require_command tar
 
 if [[ "${deployment_mode}" == "docker" ]]; then
     require_command docker
-    docker info >/dev/null 2>&1 || fail "Docker is unavailable or permission was denied."
+    ensure_docker_available
 else
     require_command setsid
 fi

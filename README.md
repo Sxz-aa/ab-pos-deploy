@@ -24,8 +24,7 @@ Archive nodes require substantially more storage, IOPS, and synchronization time
 
 ### 2.2 Required software
 
-- jq
-- Docker Engine for Docker deployments
+On Ubuntu, the installer installs missing runtime packages through APT, including Docker Engine for Docker deployments.
 
 ## 3. Deploy a node
 
