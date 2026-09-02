@@ -384,8 +384,11 @@ function existing_role_container() {
         printf '%s\n' "${preferred_name}"
         return 0
     fi
-    container_name="$(containers_for_role "${role}" "$@" | head -n 1)"
-    [[ -n "${container_name}" ]] && printf '%s\n' "${container_name}"
+    while IFS= read -r container_name; do
+        [[ -n "${container_name}" ]] || continue
+        printf '%s\n' "${container_name}"
+        return 0
+    done < <(containers_for_role "${role}" "$@")
 }
 
 function existing_validator_container() {
@@ -501,32 +504,149 @@ function prysm_import_was_duplicate_only() {
         && -n "$(grep -F 'no accounts were successfully imported' "${import_log}" || true)" ]]
 }
 
-function show_sync_status() {
-    printf '\nBeacon synchronization:\n'
-    curl -fsS --max-time 5 http://127.0.0.1:3500/eth/v1/node/syncing 2>/dev/null | jq . || true
-    printf '\nBeacon peers:\n'
-    curl -fsS --max-time 5 http://127.0.0.1:3500/eth/v1/node/peer_count 2>/dev/null | jq . || true
-    printf '\nFinality:\n'
-    curl -fsS --max-time 5 http://127.0.0.1:3500/eth/v1/beacon/states/head/finality_checkpoints 2>/dev/null | jq . || true
+function wait_for_consensus_api() {
+    local deadline=$((SECONDS + 30))
+
+    while (( SECONDS < deadline )); do
+        if curl -fsS --max-time 2 \
+            http://127.0.0.1:3500/eth/v1/node/syncing >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 2
+    done
+    curl -fsS --max-time 2 \
+        http://127.0.0.1:3500/eth/v1/node/syncing >/dev/null 2>&1
+}
+
+function show_execution_status() {
+    local block_response
+    local peer_response
+    local sync_response
+    local block_hex
+    local peer_hex
+    local sync_value
+
+    block_response="$(curl -fsS --max-time 5 \
+        -H 'content-type: application/json' \
+        --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+        http://127.0.0.1:8545 2>/dev/null)" || block_response=""
+    peer_response="$(curl -fsS --max-time 5 \
+        -H 'content-type: application/json' \
+        --data '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":2}' \
+        http://127.0.0.1:8545 2>/dev/null)" || peer_response=""
+    sync_response="$(curl -fsS --max-time 5 \
+        -H 'content-type: application/json' \
+        --data '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":3}' \
+        http://127.0.0.1:8545 2>/dev/null)" || sync_response=""
+
+    block_hex="$(jq -er '.result | select(type == "string")' <<<"${block_response}" 2>/dev/null)" \
+        || block_hex=""
+    peer_hex="$(jq -er '.result | select(type == "string")' <<<"${peer_response}" 2>/dev/null)" \
+        || peer_hex=""
+    sync_value="$(jq -cer '.result' <<<"${sync_response}" 2>/dev/null)" || sync_value=""
+
+    printf '\nExecution:\n'
+    if [[ ! "${block_hex}" =~ ^0x[0-9a-fA-F]+$ \
+        || ! "${peer_hex}" =~ ^0x[0-9a-fA-F]+$ \
+        || -z "${sync_value}" ]]; then
+        printf '  Status: not ready\n'
+        return
+    fi
+    printf '  Block: %d\n' "$((block_hex))"
+    printf '  Peers: %d\n' "$((peer_hex))"
+    if [[ "${sync_value}" == false ]]; then
+        printf '  Syncing: false\n'
+    else
+        printf '  Syncing: true\n'
+    fi
+}
+
+function show_consensus_status() {
+    local sync_response
+    local peer_response
+    local finality_response
+    local head_slot
+    local sync_distance
+    local is_syncing
+    local is_optimistic
+    local connected_peers
+    local justified_epoch
+    local finalized_epoch
+
+    sync_response="$(curl -fsS --max-time 5 \
+        http://127.0.0.1:3500/eth/v1/node/syncing 2>/dev/null)" || sync_response=""
+    if ! jq -e '.data | type == "object"' <<<"${sync_response}" >/dev/null 2>&1; then
+        printf '\nConsensus:\n'
+        printf '  Status: not ready\n'
+        return 1
+    fi
+
+    head_slot="$(jq -r '.data.head_slot // "unknown"' <<<"${sync_response}")"
+    sync_distance="$(jq -r '.data.sync_distance // "unknown"' <<<"${sync_response}")"
+    is_syncing="$(jq -r '.data.is_syncing // "unknown"' <<<"${sync_response}")"
+    is_optimistic="$(jq -r '.data.is_optimistic // "unknown"' <<<"${sync_response}")"
+
+    printf '\nConsensus:\n'
+    printf '  Head slot: %s\n' "${head_slot}"
+    printf '  Sync distance: %s\n' "${sync_distance}"
+    printf '  Syncing: %s\n' "${is_syncing}"
+    printf '  Optimistic: %s\n' "${is_optimistic}"
+
+    peer_response="$(curl -fsS --max-time 5 \
+        http://127.0.0.1:3500/eth/v1/node/peer_count 2>/dev/null)" || peer_response=""
+    connected_peers="$(jq -er '.data.connected' <<<"${peer_response}" 2>/dev/null)" \
+        || connected_peers="unknown"
+    printf '  Peers: %s\n' "${connected_peers}"
+
+    finality_response="$(curl -fsS --max-time 5 \
+        http://127.0.0.1:3500/eth/v1/beacon/states/head/finality_checkpoints 2>/dev/null)" \
+        || finality_response=""
+    justified_epoch="$(jq -er '.data.current_justified.epoch' <<<"${finality_response}" 2>/dev/null)" \
+        || justified_epoch="unknown"
+    finalized_epoch="$(jq -er '.data.finalized.epoch' <<<"${finality_response}" 2>/dev/null)" \
+        || finalized_epoch="unknown"
+    printf '  Justified epoch: %s\n' "${justified_epoch}"
+    printf '  Finalized epoch: %s\n' "${finalized_epoch}"
+}
+
+function show_docker_service() {
+    local service="$1"
+    local container_name="$2"
+    local image
+    local status
+
+    [[ -n "${container_name}" ]] || return 0
+    image="$(docker container inspect "${container_name}" --format '{{.Config.Image}}')"
+    status="$(docker container inspect "${container_name}" --format '{{.State.Status}}')"
+    printf '%-12s %-30s %-45s %s\n' \
+        "${service}" "${container_name}" "${image}" "${status}"
 }
 
 function show_docker_status() {
-    local container_name
-    local -A shown=()
+    local wait_for_api="${1:-false}"
+    local execution_name
+    local consensus_name
+    local validator_name
 
-    printf '%-30s %-45s %s\n' NAMES IMAGE STATUS
-    while IFS= read -r container_name; do
-        [[ -n "${container_name}" && -z "${shown[${container_name}]:-}" ]] || continue
-        docker container inspect "${container_name}" \
-            --format '{{printf "%-30s %-45s %s" .Name .Config.Image .State.Status}}' \
-            | sed 's#^/##'
-        shown["${container_name}"]=1
-    done < <(
-        containers_for_role execution "${geth_data_dir}"
-        containers_for_role consensus "${data_dir}/prysm" "${data_dir}/lighthouse"
-        containers_for_role validator "${data_dir}/prysm-validator" "${data_dir}/lighthouse-validator"
-    )
-    show_sync_status
+    execution_name="$(existing_role_container "${geth_container}" execution "${geth_data_dir}")"
+    consensus_name="$(existing_role_container "${beacon_container}" consensus \
+        "${data_dir}/prysm" "${data_dir}/lighthouse")"
+    validator_name="$(existing_role_container "${validator_container}" validator \
+        "${data_dir}/prysm-validator" "${data_dir}/lighthouse-validator")"
+
+    printf '\n%-12s %-30s %-45s %s\n' SERVICE CONTAINER IMAGE STATUS
+    show_docker_service Execution "${execution_name}"
+    show_docker_service Consensus "${consensus_name}"
+    show_docker_service Validator "${validator_name}"
+    show_execution_status
+    if [[ "${wait_for_api}" == true ]] && ! wait_for_consensus_api; then
+        printf '\nConsensus:\n'
+        printf '  Status: not ready after 30 seconds\n'
+        printf '  Check again with: ./ab-pos.sh %s %s geth --status\n' \
+            "${network}" "${consensus_client}"
+        return 0
+    fi
+    show_consensus_status || true
 }
 
 function operate_existing_docker_node() {
@@ -612,22 +732,37 @@ function binary_service_running() {
 }
 
 function show_binary_status() {
+    local wait_for_api="${1:-false}"
     local service
+    local service_label
     local pid_file
     local pid
 
     printf '%-12s %-8s %s\n' SERVICE PID STATUS
     for service in geth beacon validator; do
+        case "${service}" in
+            geth) service_label="Execution" ;;
+            beacon) service_label="Consensus" ;;
+            validator) service_label="Validator" ;;
+        esac
         pid_file="$(binary_pid_file "${service}")"
         pid="-"
         [[ -s "${pid_file}" ]] && pid="$(<"${pid_file}")"
         if binary_service_running "${service}"; then
-            printf '%-12s %-8s %s\n' "${service}" "${pid}" running
+            printf '%-12s %-8s %s\n' "${service_label}" "${pid}" running
         elif [[ -x "$(binary_launcher_file "${service}")" ]]; then
-            printf '%-12s %-8s %s\n' "${service}" "${pid}" stopped
+            printf '%-12s %-8s %s\n' "${service_label}" "${pid}" stopped
         fi
     done
-    show_sync_status
+    show_execution_status
+    if [[ "${wait_for_api}" == true ]] && ! wait_for_consensus_api; then
+        printf '\nConsensus:\n'
+        printf '  Status: not ready after 30 seconds\n'
+        printf '  Check again with: ./ab-pos.sh %s %s geth --binary --status\n' \
+            "${network}" "${consensus_client}"
+        return 0
+    fi
+    show_consensus_status || true
 }
 
 function stop_binary_service() {
@@ -1484,7 +1619,7 @@ if [[ "${deployment_mode}" == "binary" ]]; then
     color "37" "Binary directory: ${bin_dir}"
     color "37" "Data directory: ${data_dir}"
     color "37" "Synchronization source: $([[ "${genesis_mode}" == true ]] && echo genesis || echo checkpoint)"
-    show_binary_status
+    show_binary_status true
     exit 0
 fi
 
@@ -1694,4 +1829,4 @@ color "37" "Execution client: geth"
 color "37" "Execution image: ${geth_image}"
 color "37" "Data directory: ${data_dir}"
 color "37" "Synchronization source: $([[ "${genesis_mode}" == true ]] && echo genesis || echo checkpoint)"
-show_docker_status
+show_docker_status true
