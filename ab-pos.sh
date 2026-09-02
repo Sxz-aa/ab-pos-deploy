@@ -1006,21 +1006,39 @@ function download_release() {
     local archive_listing
     local checksum_url
     local checksum_path
+    local checksum_available=false
+    local local_archive=false
     local previous_share_dir
     local required_file
     local temporary_share_dir
     local member
     local normalized_member
 
-    archive_path="${PWD}/$(basename "${network_release_url%%\?*}")"
-    archive_listing="${archive_path}.contents"
-    checksum_url="${network_release_url}.sha256"
-    checksum_path="${archive_path}.sha256"
+    if [[ "${network_release_url}" == file://* ]]; then
+        archive_path="${network_release_url#file://}"
+        archive_path="${archive_path%%\?*}"
+        [[ "${archive_path}" == /* ]] \
+            || fail "Local Release URLs must use an absolute file:/// path."
+        [[ -r "${archive_path}" ]] \
+            || fail "Local network Release is not readable: ${archive_path}"
+        checksum_path="${archive_path}.sha256"
+        local_archive=true
+        color "34" "Using local network Release: ${archive_path}"
+    else
+        archive_path="${PWD}/$(basename "${network_release_url%%\?*}")"
+        checksum_url="${network_release_url}.sha256"
+        checksum_path="${archive_path}.sha256"
+        color "34" "Downloading network Release: ${network_release_url}"
+        curl -fL "${network_release_url}" -o "${archive_path}"
+    fi
 
-    color "34" "Downloading network Release: ${network_release_url}"
-    curl -fL "${network_release_url}" -o "${archive_path}"
+    if [[ "${local_archive}" == true ]]; then
+        [[ -s "${checksum_path}" ]] && checksum_available=true
+    elif curl -fsSL "${checksum_url}" -o "${checksum_path}"; then
+        checksum_available=true
+    fi
 
-    if curl -fsSL "${checksum_url}" -o "${checksum_path}"; then
+    if [[ "${checksum_available}" == true ]]; then
         (
             cd "$(dirname "${archive_path}")"
             sha256sum -c "$(basename "${checksum_path}")"
@@ -1029,8 +1047,11 @@ function download_release() {
         color "33" "Release checksum asset was not found; continuing without checksum verification."
     fi
 
-    tar -tzf "${archive_path}" > "${archive_listing}" \
-        || fail "Unable to inspect the network Release archive."
+    archive_listing="$(mktemp "${data_dir}/.release-contents.XXXXXX")"
+    if ! tar -tzf "${archive_path}" > "${archive_listing}"; then
+        rm -f -- "${archive_listing}"
+        fail "Unable to inspect the network Release archive."
+    fi
     while IFS= read -r member; do
         normalized_member="${member#./}"
         [[ -n "${normalized_member}" ]] || continue
