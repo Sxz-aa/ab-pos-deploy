@@ -14,9 +14,16 @@ readonly validator_keys_path="${keys_path}/validator_keys"
 readonly legacy_validator_keys_path="${validator_keys_path}/validator_keys"
 readonly password_path="${keys_path}/pwd.txt"
 readonly mnemonic_path="${keys_path}/mnemonic.txt"
+readonly bin_path="${root_path}/bin"
 readonly host_uid="${SUDO_UID:-$(id -u)}"
 readonly host_gid="${SUDO_GID:-$(id -g)}"
 readonly deposit_cli_image="${DEPOSIT_CLI_IMAGE:-ghcr.io/ethstaker/ethstaker-deposit-cli:latest}"
+readonly deposit_cli_release_version="${DEPOSIT_CLI_RELEASE_VERSION:-latest}"
+readonly github_api_url="${GITHUB_API_URL:-https://api.github.com}"
+
+deployment_mode="docker"
+deployment_mode_selected=false
+platform_arch=""
 
 readonly devnet_chain_setting='{"network_name":"abcore","genesis_fork_version":"0x000001ab","exit_fork_version":"0x000001ab","genesis_validator_root":"0x0000000000000000000000000000000000000000000000000000000000000000","multiplier":1,"min_activation_amount":32,"min_deposit_amount":1}'
 
@@ -45,6 +52,12 @@ Arguments:
       The value must be a 20-byte hexadecimal address prefixed with 0x.
 
 Options:
+  --docker
+      Generate keys with the Deposit CLI container. This is the default.
+
+  --binary
+      Download and run the official EthStaker Deposit CLI binary.
+
   -h, --help
       Show this help message and exit.
 
@@ -61,8 +74,12 @@ Environment variables:
       Default: /data/abpos
 
   DEPOSIT_CLI_IMAGE
-      Deposit CLI Docker image.
+      Deposit CLI Docker image used by --docker.
       Default: ghcr.io/ethstaker/ethstaker-deposit-cli:latest
+
+  DEPOSIT_CLI_RELEASE_VERSION
+      EthStaker Deposit CLI Release tag used by --binary.
+      Default: latest
 
 Outputs:
   <ABPOS_ROOT_PATH>/keys/validator_keys/keystore-*.json
@@ -72,6 +89,9 @@ Outputs:
 
 Examples:
   ./generate-abpos-validators.sh \
+    0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
+
+  ./generate-abpos-validators.sh --binary \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   VALIDATOR_COUNT=10 \
@@ -174,23 +194,40 @@ function normalize_legacy_output() {
         "Legacy validator key directory normalized successfully."
 }
 
-case "${1:-}" in
-    -h | --help)
-        usage
-        exit 0
-        ;;
-    -*)
-        usage >&2
-        fail "Unknown option: $1"
-        ;;
-esac
+arguments=()
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --docker)
+            [[ "${deployment_mode_selected}" == false || "${deployment_mode}" == "docker" ]] \
+                || fail "--docker and --binary are mutually exclusive."
+            deployment_mode="docker"
+            deployment_mode_selected=true
+            ;;
+        --binary)
+            [[ "${deployment_mode_selected}" == false || "${deployment_mode}" == "binary" ]] \
+                || fail "--docker and --binary are mutually exclusive."
+            deployment_mode="binary"
+            deployment_mode_selected=true
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        -*)
+            usage >&2
+            fail "Unknown option: $1"
+            ;;
+        *) arguments+=("$1") ;;
+    esac
+    shift
+done
 
-if [[ "$#" -gt 1 ]]; then
+if [[ "${#arguments[@]}" -gt 1 ]]; then
     usage >&2
-    fail "Expected one withdrawal address, received $# arguments."
+    fail "Expected one withdrawal address, received ${#arguments[@]} arguments."
 fi
 
-withdrawal_address="${1:-${WITHDRAWAL_ADDRESS:-}}"
+withdrawal_address="${arguments[0]:-${WITHDRAWAL_ADDRESS:-}}"
 
 if [[ -z "${withdrawal_address}" ]]; then
     usage
@@ -205,16 +242,107 @@ if [[ ! "${validator_count}" =~ ^[1-9][0-9]*$ ]]; then
     fail "VALIDATOR_COUNT must be a positive integer."
 fi
 
-require_command docker
 require_command find
 require_command mv
 require_command openssl
 require_command rmdir
 
-if ! docker info >/dev/null 2>&1; then
-    fail \
-        "Docker is unavailable or the current user does not have permission to access it."
+if [[ "${deployment_mode}" == "docker" ]]; then
+    require_command docker
+    if ! docker info >/dev/null 2>&1; then
+        fail \
+            "Docker is unavailable or the current user does not have permission to access it."
+    fi
+else
+    require_command curl
+    require_command install
+    require_command jq
+    require_command sha256sum
+    require_command tar
+    case "$(uname -m)" in
+        x86_64 | amd64) platform_arch="amd64" ;;
+        aarch64 | arm64) platform_arch="arm64" ;;
+        *) fail "Unsupported host architecture: $(uname -m)" ;;
+    esac
 fi
+
+function github_release_json() {
+    local repository="$1"
+    local version="$2"
+    local api_url="${github_api_url%/}/repos/${repository}/releases"
+
+    if [[ "${version}" == "latest" ]]; then
+        curl -fsSL "${api_url}/latest"
+    else
+        curl -fsSL "${api_url}/tags/${version}"
+    fi
+}
+
+function install_deposit_cli_binary() {
+    local release_json
+    local release_tag
+    local asset_count
+    local asset_name
+    local asset_url
+    local checksum_url
+    local expected_sha256
+    local actual_sha256
+    local temporary_dir
+    local archive
+    local extracted_binary
+
+    release_json="$(github_release_json ethstaker/ethstaker-deposit-cli "${deposit_cli_release_version}")" \
+        || fail "Unable to query the EthStaker Deposit CLI Release."
+    release_tag="$(jq -r '.tag_name // empty' <<<"${release_json}")"
+    [[ "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
+        || fail "The EthStaker Deposit CLI Release has an invalid tag: ${release_tag:-empty}"
+    asset_count="$(jq -r --arg arch "${platform_arch}" '
+        [.assets[] | select(.name | test("^ethstaker_deposit-cli-[0-9a-f]+-linux-" + $arch + "\\.tar\\.gz$"))] | length
+    ' <<<"${release_json}")"
+    [[ "${asset_count}" -eq 1 ]] \
+        || fail "EthStaker Deposit CLI Release ${release_tag} must contain exactly one linux-${platform_arch} archive; found ${asset_count}."
+    asset_name="$(jq -r --arg arch "${platform_arch}" '
+        [.assets[] | select(.name | test("^ethstaker_deposit-cli-[0-9a-f]+-linux-" + $arch + "\\.tar\\.gz$"))][0].name
+    ' <<<"${release_json}")"
+    asset_url="$(jq -r --arg name "${asset_name}" \
+        '[.assets[] | select(.name == $name)][0].browser_download_url // empty' <<<"${release_json}")"
+    checksum_url="$(jq -r --arg name "${asset_name}.sha256" \
+        '[.assets[] | select(.name == $name)][0].browser_download_url // empty' <<<"${release_json}")"
+    [[ -n "${asset_url}" && -n "${checksum_url}" ]] \
+        || fail "EthStaker Deposit CLI Release ${release_tag} does not contain ${asset_name} and its checksum."
+
+    mkdir -p "${bin_path}"
+    temporary_dir="$(mktemp -d "${root_path}/deposit-cli-download.XXXXXX")"
+    archive="${temporary_dir}/${asset_name}"
+    if ! curl -fL "${asset_url}" -o "${archive}" \
+        || ! curl -fsSL "${checksum_url}" -o "${archive}.sha256"; then
+        rm -rf -- "${temporary_dir}"
+        fail "Unable to download ${asset_name} and its checksum."
+    fi
+    expected_sha256="$(awk 'NR == 1 { print $1 }' "${archive}.sha256")"
+    [[ "${expected_sha256}" =~ ^[0-9a-fA-F]{64}$ ]] || {
+        rm -rf -- "${temporary_dir}"
+        fail "Invalid checksum file for ${asset_name}."
+    }
+    actual_sha256="$(sha256sum "${archive}" | awk '{ print $1 }')"
+    [[ "${actual_sha256,,}" == "${expected_sha256,,}" ]] || {
+        rm -rf -- "${temporary_dir}"
+        fail "Checksum verification failed for ${asset_name}."
+    }
+    if ! tar -xzf "${archive}" -C "${temporary_dir}"; then
+        rm -rf -- "${temporary_dir}"
+        fail "Unable to extract ${asset_name}."
+    fi
+    extracted_binary="$(find "${temporary_dir}" -type f -name deposit -print -quit)"
+    [[ -n "${extracted_binary}" ]] || {
+        rm -rf -- "${temporary_dir}"
+        fail "${asset_name} does not contain the deposit executable."
+    }
+    install -m 0755 "${extracted_binary}" "${bin_path}/deposit.new"
+    mv -f -- "${bin_path}/deposit.new" "${bin_path}/deposit"
+    rm -rf -- "${temporary_dir}"
+    color "32" "Installed EthStaker Deposit CLI ${release_tag}: ${bin_path}/deposit"
+}
 
 umask 077
 
@@ -255,6 +383,10 @@ if [[ "${existing_file_count}" -eq 0 ]]; then
     color "34" \
         "Generating validator secrets and ${validator_count} validator keys..."
 
+    if [[ "${deployment_mode}" == "binary" ]]; then
+        install_deposit_cli_binary
+    fi
+
     if [[ ! -s "${password_path}" ]]; then
         openssl rand -hex 32 >"${password_path}"
         chmod 600 "${password_path}"
@@ -272,18 +404,28 @@ if [[ "${existing_file_count}" -eq 0 ]]; then
     fi
 
     if [[ ! -s "${mnemonic_path}" ]]; then
-        docker run --rm \
-            --tty \
-            --env TERM=xterm \
-            --user "${host_uid}:${host_gid}" \
-            -v "${keys_path}:/app/keys" \
-            "${deposit_cli_image}" \
-            --non_interactive \
-            --ignore_connectivity \
-            --language english \
-            generate-mnemonic \
-            --mnemonic_language=english \
-            --output_file=/app/keys/mnemonic.txt
+        if [[ "${deployment_mode}" == "binary" ]]; then
+            "${bin_path}/deposit" \
+                --non_interactive \
+                --ignore_connectivity \
+                --language english \
+                generate-mnemonic \
+                --mnemonic_language=english \
+                "--output_file=${mnemonic_path}"
+        else
+            docker run --rm \
+                --tty \
+                --env TERM=xterm \
+                --user "${host_uid}:${host_gid}" \
+                -v "${keys_path}:/app/keys" \
+                "${deposit_cli_image}" \
+                --non_interactive \
+                --ignore_connectivity \
+                --language english \
+                generate-mnemonic \
+                --mnemonic_language=english \
+                --output_file=/app/keys/mnemonic.txt
+        fi
 
         chmod 600 "${mnemonic_path}"
 
@@ -302,25 +444,54 @@ if [[ "${existing_file_count}" -eq 0 ]]; then
     mnemonic="$(<"${mnemonic_path}")"
     keystore_password="$(<"${password_path}")"
 
-    docker run --rm \
-        --tty \
-        --env TERM=xterm \
-        --user "${host_uid}:${host_gid}" \
-        -v "${validator_keys_path}:/app/validator_keys" \
-        "${deposit_cli_image}" \
-        --non_interactive \
-        --ignore_connectivity \
-        --language english \
-        existing-mnemonic \
-        --mnemonic="${mnemonic}" \
-        --keystore_password="${keystore_password}" \
-        --validator_start_index="${validator_start_index}" \
-        --num_validators="${validator_count}" \
-        --withdrawal_address="${withdrawal_address}" \
-        --compounding \
-        --amount="${deposit_amount}" \
-        --devnet_chain_setting="${devnet_chain_setting}" \
-        --folder=/app
+    if [[ "${deployment_mode}" == "binary" ]]; then
+        generation_dir="$(mktemp -d "${keys_path}/deposit-output.XXXXXX")"
+        generated_keys_dir="${generation_dir}/validator_keys"
+        if ! "${bin_path}/deposit" \
+            --non_interactive \
+            --ignore_connectivity \
+            --language english \
+            existing-mnemonic \
+            --mnemonic="${mnemonic}" \
+            --keystore_password="${keystore_password}" \
+            --validator_start_index="${validator_start_index}" \
+            --num_validators="${validator_count}" \
+            --withdrawal_address="${withdrawal_address}" \
+            --compounding \
+            --amount="${deposit_amount}" \
+            --devnet_chain_setting="${devnet_chain_setting}" \
+            "--folder=${generation_dir}"; then
+            rm -rf -- "${generation_dir}"
+            fail "EthStaker Deposit CLI failed to generate validator keys."
+        fi
+        [[ -d "${generated_keys_dir}" ]] || {
+            rm -rf -- "${generation_dir}"
+            fail "EthStaker Deposit CLI did not create validator_keys/."
+        }
+        cp -a "${generated_keys_dir}/." "${validator_keys_path}/"
+        rm -rf -- "${generation_dir}"
+    else
+        docker run --rm \
+            --tty \
+            --env TERM=xterm \
+            --user "${host_uid}:${host_gid}" \
+            -v "${validator_keys_path}:/app/validator_keys" \
+            "${deposit_cli_image}" \
+            --non_interactive \
+            --ignore_connectivity \
+            --language english \
+            existing-mnemonic \
+            --mnemonic="${mnemonic}" \
+            --keystore_password="${keystore_password}" \
+            --validator_start_index="${validator_start_index}" \
+            --num_validators="${validator_count}" \
+            --withdrawal_address="${withdrawal_address}" \
+            --compounding \
+            --amount="${deposit_amount}" \
+            --devnet_chain_setting="${devnet_chain_setting}" \
+            --folder=/app
+        normalize_legacy_output
+    fi
 
     unset mnemonic
     unset keystore_password

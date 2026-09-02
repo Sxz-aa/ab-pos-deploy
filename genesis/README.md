@@ -75,9 +75,8 @@ Network Operator
 
 ### 4.1 Prerequisites
 
-- Docker Engine
-- Bash
-- OpenSSL
+- Docker Engine when using the default Docker mode
+- `jq` when using `--binary`
 - A confirmed 20-byte execution-layer withdrawal address
 - A secure backup location that is not inside this repository
 
@@ -103,6 +102,15 @@ chmod +x generate-abpos-validators.sh
 ```
 
 Replace the example withdrawal address before running the command.
+
+To use the official EthStaker Deposit CLI binary instead of Docker:
+
+```bash
+./generate-abpos-validators.sh --binary \
+  0x0000000000000000000000000000000000000000
+```
+
+The binary archive and its checksum are downloaded from the selected EthStaker Deposit CLI GitHub Release. The verified executable is installed under `<ABPOS_ROOT_PATH>/bin/`.
 
 The current generator defaults to:
 
@@ -146,7 +154,8 @@ ABPOS_ROOT_PATH=/data/abpos/operator-a \
 | `WITHDRAWAL_ADDRESS` | None | Used when the positional address is omitted |
 | `VALIDATOR_COUNT` | `1000` | Number of validators to generate |
 | `ABPOS_ROOT_PATH` | `/data/abpos` | Output root |
-| `DEPOSIT_CLI_IMAGE` | `ghcr.io/ethstaker/ethstaker-deposit-cli:latest` | Deposit CLI container image |
+| `DEPOSIT_CLI_IMAGE` | `ghcr.io/ethstaker/ethstaker-deposit-cli:latest` | Deposit CLI container image used by `--docker` |
+| `DEPOSIT_CLI_RELEASE_VERSION` | `latest` | Deposit CLI Release tag used by `--binary` |
 
 Run `./generate-abpos-validators.sh --help` for the complete interface.
 
@@ -160,7 +169,8 @@ The generator:
 - Normalizes the legacy nested `validator_keys/validator_keys` output layout.
 - Reuses a complete existing key set instead of generating over it.
 - Stops on an incomplete or inconsistent key set.
-- Runs the Deposit CLI container with the invoking user's UID and GID.
+- Runs the Deposit CLI container with the invoking user's UID and GID in Docker mode.
+- Verifies the official Deposit CLI archive checksum in binary mode.
 
 It does not build genesis files, send a transaction, upload private material, back up the mnemonic, or start node software.
 
