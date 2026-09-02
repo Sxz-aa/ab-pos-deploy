@@ -1580,6 +1580,7 @@ function deploy_binary_node() {
         --http.addr=127.0.0.1
         --http.port=8545
         --http.api=eth,net,web3,admin
+        --rpc.txfeecap=1000
         --authrpc.addr=127.0.0.1
         --authrpc.port=8551
         --authrpc.vhosts=\*
@@ -1737,6 +1738,7 @@ geth_args=(
     --http.addr=127.0.0.1
     --http.port=8545
     --http.api=eth,net,web3,admin
+    --rpc.txfeecap=1000
     --authrpc.addr=127.0.0.1
     --authrpc.port=8551
     --authrpc.vhosts=\*
