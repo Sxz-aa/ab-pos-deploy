@@ -315,6 +315,27 @@ function container_exists() {
     docker container inspect "$1" >/dev/null 2>&1
 }
 
+function container_mounts_host_path() {
+    local container_name="$1"
+    local host_path="$2"
+
+    docker container inspect "${container_name}" \
+        --format '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null \
+        | grep -Fx -- "${host_path}" >/dev/null
+}
+
+function remove_legacy_container() {
+    local container_name="$1"
+    local expected_host_path="$2"
+
+    container_exists "${container_name}" || return 0
+    if ! container_mounts_host_path "${container_name}" "${expected_host_path}"; then
+        fail "Legacy container ${container_name} exists but does not use ${expected_host_path}; refusing to remove it."
+    fi
+    color "34" "Replacing legacy container ${container_name}."
+    docker rm -f "${container_name}" >/dev/null
+}
+
 function show_sync_status() {
     printf '\nBeacon synchronization:\n'
     curl -fsS --max-time 5 http://127.0.0.1:3500/eth/v1/node/syncing 2>/dev/null | jq . || true
@@ -1238,6 +1259,7 @@ if [[ "${deployment_mode}" == "binary" ]]; then
     exit 0
 fi
 
+remove_legacy_container abpos-geth "${geth_data_dir}"
 docker rm -f "${geth_container}" >/dev/null 2>&1 || true
 if [[ -d "${geth_data_dir}/geth/chaindata" ]]; then
     color "34" "Updating Geth chain configuration from genesis.json."
@@ -1284,6 +1306,7 @@ mapfile -t bootstrap_args < <(
     fi
 )
 
+remove_legacy_container "abpos-${consensus_client}" "${beacon_data_dir}"
 docker rm -f "${beacon_container}" >/dev/null 2>&1 || true
 if [[ "${consensus_client}" == "prysm" ]]; then
     beacon_args=(
@@ -1369,6 +1392,7 @@ function import_lighthouse_keys() {
 }
 
 if [[ "${validator_mode}" == true ]]; then
+    remove_legacy_container abpos-validator "${validator_data_dir}"
     docker rm -f "${validator_container}" >/dev/null 2>&1 || true
     if [[ "${consensus_client}" == "prysm" ]]; then
         import_prysm_keys
