@@ -1,10 +1,10 @@
-name: Publish AB PoS release
+name: Promote AB PoS release
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Network Release tag to publish and promote
+        description: Versioned Network Release tag to promote
         required: true
         type: string
 
@@ -89,15 +89,13 @@ jobs:
         run: |
           docker manifest inspect "${GETH_IMAGE}:${AB_GETH_VERSION}" >/dev/null
 
-      - name: Publish and promote GitHub Release
+      - name: Promote GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           gh release edit "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --draft=false \
-            --prerelease=false \
             --latest
 
       - name: Point AB Geth latest to the promoted Release version

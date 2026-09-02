@@ -86,7 +86,7 @@ Two Network Releases may contain the same AB Geth binary when the execution-clie
 
 ## GitHub Release workflows
 
-### Build a Release draft
+### Build a versioned Release
 
 Push a signed Network Release tag to GitHub:
 
@@ -102,23 +102,23 @@ The workflow performs the following operations:
 3. Builds and pushes the exact image only when it does not exist.
 4. Otherwise, pulls the exact image and extracts `/usr/local/bin/geth` without recompiling or overwriting the image.
 5. Produces the AB Geth binary checksum.
-6. Uploads all files to a Draft GitHub Release.
+6. Publishes all files in a versioned GitHub Release without marking it as latest.
 
-This workflow does not publish the GitHub Release or change the AB Geth `latest` image tag.
+The versioned Release can be tested explicitly with `ab-pos.sh --release <tag>`. This workflow does not change the latest GitHub Release or the AB Geth `latest` image tag.
 
 ### Publish and promote a Release
 
-After reviewing the Draft Release, open GitHub Actions, select **Publish AB PoS release**, choose **Run workflow**, and enter the Network Release tag.
+After testing the versioned Release, open GitHub Actions, select **Promote AB PoS release**, choose **Run workflow**, and enter the Network Release tag.
 
 The manual workflow:
 
 1. Verifies that the Release contains one matching Network archive and checksum.
 2. Verifies that every AB Geth binary has a checksum and that all binaries use one AB Geth version.
 3. Verifies that the immutable GHCR image for that AB Geth version exists.
-4. Publishes the Draft Release and marks it as the latest GitHub Release.
+4. Marks the selected versioned Release as the latest GitHub Release.
 5. Points the AB Geth `latest` image tag to the exact immutable image selected by that Network Release.
 
-The selected Release controls `latest`; the workflow does not choose a different image merely because its version number is higher. Release jobs share one concurrency group so a draft build and a promotion cannot run simultaneously.
+The selected Release controls `latest`; the workflow does not choose a different image merely because its version number is higher. Release jobs share one concurrency group so a tagged build and a promotion cannot run simultaneously.
 
 ## Image immutability
 
