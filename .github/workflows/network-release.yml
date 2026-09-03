@@ -27,35 +27,44 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Select Release phase
+      - name: Validate Release tag
         id: release
         run: |
           set -Eeuo pipefail
           if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]]; then
-            release_phase=candidate
             prerelease=true
           elif [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             prerelease=false
-            if [[ -s abpos/testnet/share/checkpoint_sync_urls.txt ]]; then
-              release_phase=post-genesis
-            else
-              release_phase=genesis
-            fi
           else
             printf 'ERROR: tag must be vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.NUMBER.\n' >&2
             exit 1
           fi
-          printf 'release_phase=%s\n' "${release_phase}" >>"${GITHUB_OUTPUT}"
           printf 'prerelease=%s\n' "${prerelease}" >>"${GITHUB_OUTPUT}"
 
       - name: Build network artifacts
         run: |
-          make network \
-            VERSION="${GITHUB_REF_NAME}" \
-            RELEASE_PHASE="${{ steps.release.outputs.release_phase }}"
+          set -Eeuo pipefail
+          if [[ "${{ steps.release.outputs.prerelease }}" == "true" ]]; then
+            release_phase=candidate
+          else
+            release_phase=release
+          fi
+          found_network=false
+          for share_dir in abpos/*/share; do
+            [[ -s "${share_dir}/genesis.json" ]] || continue
+            found_network=true
+            network="$(basename "$(dirname "${share_dir}")")"
+            make network \
+              NETWORK="${network}" \
+              VERSION="${GITHUB_REF_NAME}" \
+              RELEASE_PHASE="${release_phase}"
+            printf '%s\n' "${network}" >>build/release-networks.txt
+          done
+          [[ "${found_network}" == "true" ]] \
+            || { printf 'ERROR: no populated network share directory was found.\n' >&2; exit 1; }
 
-      - name: Verify Final Genesis against Candidate
-        if: steps.release.outputs.release_phase == 'genesis'
+      - name: Compare with matching Candidate when available
+        if: steps.release.outputs.prerelease == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -75,19 +84,28 @@ jobs:
               | .tag_name // empty
             ' <<<"${releases_json}"
           )"
-          [[ -n "${candidate_tag}" ]] || {
-            printf 'ERROR: no published Candidate Release matches %s-rc.NUMBER.\n' \
-              "${GITHUB_REF_NAME}" >&2
-            exit 1
-          }
+          if [[ -z "${candidate_tag}" ]]; then
+            printf 'No matching Candidate Release was found; continuing without a Candidate comparison.\n'
+            exit 0
+          fi
+          candidate_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${candidate_tag}")"
           mkdir -p build/candidate
-          gh release download "${candidate_tag}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --pattern "abpos-testnet-${candidate_tag}.tar.gz" \
-            --dir build/candidate
-          ./scripts/verify-genesis-candidate.sh \
-            "build/candidate/abpos-testnet-${candidate_tag}.tar.gz" \
-            "build/abpos-testnet-${GITHUB_REF_NAME}.tar.gz"
+          while IFS= read -r network; do
+            candidate_asset="abpos-${network}-${candidate_tag}.tar.gz"
+            if ! jq -e --arg name "${candidate_asset}" \
+              'any(.assets[]; .name == $name)' <<<"${candidate_json}" >/dev/null; then
+              printf 'Candidate %s has no %s asset; skipping its comparison.\n' \
+                "${candidate_tag}" "${network}"
+              continue
+            fi
+            gh release download "${candidate_tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --pattern "${candidate_asset}" \
+              --dir build/candidate
+            ./scripts/verify-genesis-candidate.sh \
+              "build/candidate/${candidate_asset}" \
+              "build/abpos-${network}-${GITHUB_REF_NAME}.tar.gz"
+          done <build/release-networks.txt
 
       - name: Prepare AB Geth release artifacts
         env:

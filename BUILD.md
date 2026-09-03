@@ -38,10 +38,10 @@ make check
 Build the selected network archive:
 
 ```bash
-make network VERSION=v1.2.3 RELEASE_PHASE=genesis
+make network NETWORK=testnet VERSION=v1.2.3 RELEASE_PHASE=release
 ```
 
-Use `RELEASE_PHASE=candidate` for a Genesis Candidate whose bootstrap node files have not yet been populated. Use `RELEASE_PHASE=genesis` for the Final Genesis archive; it requires valid consensus and execution bootstrap node lists. Use `RELEASE_PHASE=post-genesis` after a trusted checkpoint provider has been published.
+Use `RELEASE_PHASE=candidate` for a Genesis Candidate whose bootstrap node files have not yet been populated. Normal Releases use `RELEASE_PHASE=release` and require valid consensus and execution bootstrap node lists. A checkpoint URL is validated when present but does not determine the Release mode.
 
 Build the patched static Geth binary:
 
@@ -73,7 +73,7 @@ Running `make` without a target builds the network archive, patched binary, and 
 
 ## Release assets
 
-Every Network Release is self-contained and contains:
+Every Network Release is self-contained. GitHub packages one network archive for each populated `abpos/<network>/share` directory, plus one AB Geth binary:
 
 ```text
 abpos-testnet-v1.2.3.tar.gz
@@ -82,7 +82,7 @@ ab-geth-v1.17.5-ab.1-linux-amd64
 ab-geth-v1.17.5-ab.1-linux-amd64.sha256
 ```
 
-Two Network Releases may contain the same AB Geth binary when the execution-client version has not changed.
+The same Release may contain both Testnet and Mainnet archives. Two Releases may contain the same AB Geth binary when the execution-client version has not changed.
 
 ## GitHub Release workflows
 
@@ -106,18 +106,18 @@ git tag -s v1.2.3 -m "AB PoS testnet v1.2.3"
 git push <github-remote> v1.2.3
 ```
 
-Before publishing a Final Genesis Release, the workflow downloads the newest matching `v1.2.3-rc.NUMBER` Pre-release and verifies that its Genesis, client configuration, and public Genesis metadata are byte-for-byte identical. The bootstrap node lists are the only files allowed to be completed between Candidate and Final.
+When a matching `v1.2.3-rc.NUMBER` Pre-release exists, the workflow downloads it and verifies that its Genesis, client configuration, and public Genesis metadata are byte-for-byte identical. The bootstrap node lists are the only files allowed to be completed between Candidate and Final. A matching Candidate is not required for an ordinary stable Release.
 
-### Build a versioned post-genesis Release
+### Build another stable Release
 
-After finalization, add the reviewed checkpoint URL and push a new signed stable tag:
+Push a new signed stable tag whenever reviewed network files or bundled client versions change:
 
 ```bash
 git tag -s v1.2.4 -m "AB PoS testnet v1.2.4"
 git push <github-remote> v1.2.4
 ```
 
-For each Candidate, Final Genesis, or post-genesis tag, the workflow performs the following operations:
+For each Candidate or stable tag, the workflow performs the following operations:
 
 1. Validates and packages the network files.
 2. Checks whether `ghcr.io/abdaodev/ab-geth:<AB_GETH_VERSION>` already exists.
@@ -136,7 +136,7 @@ To retry or perform the same promotion explicitly, open GitHub Actions, select *
 
 The manual workflow:
 
-1. Verifies that the Release contains one matching Network archive and checksum.
+1. Verifies every Network archive and checksum in the Release.
 2. Verifies that every AB Geth binary has a checksum and that all binaries use one AB Geth version.
 3. Verifies that the immutable GHCR image for that AB Geth version exists.
 4. Marks the selected versioned Release as the latest GitHub Release.

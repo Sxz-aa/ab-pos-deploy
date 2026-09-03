@@ -4,7 +4,7 @@ ROOT_DIR := $(CURDIR)
 BUILD_DIR := $(ROOT_DIR)/build
 NETWORK ?= testnet
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || printf 'dev')
-RELEASE_PHASE ?= genesis
+RELEASE_PHASE ?= release
 
 GETH_REPOSITORY ?= https://github.com/ethereum/go-ethereum.git
 GETH_VERSION ?= v1.17.5
@@ -18,14 +18,18 @@ GETH_PATCHES := $(wildcard patches/go-ethereum/*.patch)
 export ROOT_DIR BUILD_DIR NETWORK VERSION RELEASE_PHASE
 export GETH_REPOSITORY GETH_VERSION AB_GETH_VERSION GETH_IMAGE GETH_PLATFORM
 
-.PHONY: all network testnet check geth geth-version docker push-docker clean
+.PHONY: all network testnet mainnet check geth geth-version docker push-docker clean
 
 all: network geth docker
 
-network: $(NETWORK)
+network: check
+	./build.sh "$(VERSION)" "$(NETWORK)" "$(RELEASE_PHASE)"
 
-testnet: check
-	./build.sh "$(VERSION)" testnet "$(RELEASE_PHASE)"
+testnet:
+	$(MAKE) network NETWORK=testnet VERSION="$(VERSION)" RELEASE_PHASE="$(RELEASE_PHASE)"
+
+mainnet:
+	$(MAKE) network NETWORK=mainnet VERSION="$(VERSION)" RELEASE_PHASE="$(RELEASE_PHASE)"
 
 check:
 	./build.sh --check "$(NETWORK)" "$(RELEASE_PHASE)"

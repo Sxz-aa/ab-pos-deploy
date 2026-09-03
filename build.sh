@@ -15,7 +15,7 @@ Usage:
   ./build.sh --check NETWORK RELEASE_PHASE
   ./build.sh VERSION NETWORK RELEASE_PHASE
 
-RELEASE_PHASE must be candidate, genesis, or post-genesis.
+RELEASE_PHASE must be candidate or release.
 USAGE
 }
 
@@ -143,8 +143,8 @@ function validate_network() {
 
     [[ "${target_network}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid network name: ${target_network}"
     case "${target_phase}" in
-        candidate|genesis|post-genesis) ;;
-        *) fail "RELEASE_PHASE must be candidate, genesis, or post-genesis; got: ${target_phase}" ;;
+        candidate|release) ;;
+        *) fail "RELEASE_PHASE must be candidate or release; got: ${target_phase}" ;;
     esac
 
     [[ -d "${target_share_dir}" ]] || fail "network share directory not found: ${target_share_dir}"
@@ -285,19 +285,17 @@ function validate_network() {
     validate_unique_line_file "${target_share_dir}/bootstrap_nodes_execution.txt" "Geth enode"
     validate_unique_line_file "${target_share_dir}/checkpoint_sync_urls.txt" "checkpoint URL"
 
-    if [[ "${target_phase}" == "post-genesis" ]]; then
-        require_data_line_file "${target_share_dir}/checkpoint_sync_urls.txt" "checkpoint URL"
-    elif [[ "${target_phase}" == "candidate" ]]; then
+    if [[ "${target_phase}" == "candidate" ]]; then
         printf '%s\n' \
             "INFO: Genesis Candidate validation allows empty bootstrap node files." \
             "      Populate both lists before building the final Genesis Release."
     elif [[ ! -s "${target_share_dir}/checkpoint_sync_urls.txt" ]]; then
         printf '%s\n' \
-            "INFO: checkpoint_sync_urls.txt is absent. This is valid for a genesis release;" \
-            "      non-genesis nodes must use --checkpoint-url until a post-genesis release is published."
+            "INFO: checkpoint_sync_urls.txt is absent." \
+            "      Nodes must use --genesis or provide --checkpoint-url."
     fi
 
-    printf 'Validated %s network files for the %s release phase.\n' "${target_network}" "${target_phase}"
+    printf 'Validated %s network files in %s mode.\n' "${target_network}" "${target_phase}"
 }
 
 if [[ "${1:-}" == "--check" ]]; then

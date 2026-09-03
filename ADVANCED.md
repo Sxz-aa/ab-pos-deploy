@@ -22,7 +22,7 @@ The default build settings come from the `Makefile`:
 
 ```text
 NETWORK=testnet
-RELEASE_PHASE=genesis
+RELEASE_PHASE=release
 GETH_VERSION=v1.17.5
 AB_GETH_VERSION=v1.17.5-ab.1
 GETH_PLATFORM=linux/amd64
@@ -66,15 +66,15 @@ build/abpos-testnet-local.tar.gz.sha256
 
 The fixed version is optional. A normal `make` build is sufficient.
 
-### 1.2 Post-genesis network archive
+### 1.2 Checkpoint configuration
 
-The default phase is `genesis`. After a trusted checkpoint provider has been published, build a post-genesis archive with:
+The default `release` mode validates a checkpoint URL when the network share contains one:
 
 ```bash
-make network RELEASE_PHASE=post-genesis
+make network RELEASE_PHASE=release
 ```
 
-This requires a valid `checkpoint_sync_urls.txt` under `abpos/testnet/share/`.
+The file is optional. Without it, non-genesis nodes must provide `--checkpoint-url` when installing.
 
 ## 2. Install from a local Docker build
 

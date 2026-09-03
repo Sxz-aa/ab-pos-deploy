@@ -77,12 +77,14 @@ jobs:
               | select(endswith("-" + $tag + ".tar.gz"))
             ' <<<"${release_json}"
           )
-          [[ "${#network_archives[@]}" -eq 1 ]] \
-            || { printf 'ERROR: expected one Network archive for %s; found %s.\n' \
+          [[ "${#network_archives[@]}" -ge 1 ]] \
+            || { printf 'ERROR: expected at least one Network archive for %s; found %s.\n' \
               "${RELEASE_TAG}" "${#network_archives[@]}" >&2; exit 1; }
-          jq -e --arg name "${network_archives[0]}.sha256" \
-            'any(.assets[]; .name == $name)' <<<"${release_json}" >/dev/null \
-            || { printf 'ERROR: missing checksum for %s.\n' "${network_archives[0]}" >&2; exit 1; }
+          for archive in "${network_archives[@]}"; do
+            jq -e --arg name "${archive}.sha256" \
+              'any(.assets[]; .name == $name)' <<<"${release_json}" >/dev/null \
+              || { printf 'ERROR: missing checksum for %s.\n' "${archive}" >&2; exit 1; }
+          done
 
           mapfile -t geth_binaries < <(
             jq -r '.assets[].name' <<<"${release_json}" \
