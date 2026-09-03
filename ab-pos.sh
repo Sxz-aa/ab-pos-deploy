@@ -497,7 +497,16 @@ beacon_data_dir="${data_dir}/${consensus_client}"
 validator_data_dir="${data_dir}/${consensus_client}-validator"
 mnemonic_file="$(dirname "${password_file}")/mnemonic.txt"
 deposit_cli_image="${default_deposit_cli_image}"
-jwt_secret_file="${data_dir}/jwtsecret"
+config_dir="${data_dir}/config"
+geth_config_dir="${config_dir}/execution/geth"
+consensus_config_dir="${config_dir}/consensus"
+prysm_config_dir="${consensus_config_dir}/prysm"
+lighthouse_config_dir="${consensus_config_dir}/lighthouse"
+lighthouse_network_dir="${lighthouse_config_dir}/network"
+geth_nodekey_file="${geth_config_dir}/nodekey"
+prysm_p2p_key_file="${prysm_config_dir}/p2p.key"
+jwt_secret_file="${config_dir}/jwtsecret"
+legacy_jwt_secret_file="${data_dir}/jwtsecret"
 bin_dir="${data_dir}/bin"
 run_dir="${data_dir}/run"
 log_dir="${data_dir}/logs"
@@ -1122,14 +1131,21 @@ if [[ "${validator_mode}" == true && "${genesis_mode}" == false ]]; then
 fi
 
 mkdir -p "${share_dir}" "${geth_data_dir}" "${beacon_data_dir}" "${validator_data_dir}" \
-    "${keys_dir}" "${bin_dir}" "${run_dir}" "${log_dir}"
+    "${keys_dir}" "${bin_dir}" "${run_dir}" "${log_dir}" "${geth_config_dir}" \
+    "${prysm_config_dir}" "${lighthouse_config_dir}"
 
 function ensure_local_jwt_secret() {
     local jwt
     local temporary_file
 
+    if [[ ! -e "${jwt_secret_file}" && -s "${legacy_jwt_secret_file}" ]]; then
+        cp -- "${legacy_jwt_secret_file}" "${jwt_secret_file}"
+        chmod 600 "${jwt_secret_file}"
+        color "32" "Preserved the existing Engine API JWT secret in ${jwt_secret_file}."
+    fi
+
     if [[ ! -s "${jwt_secret_file}" ]]; then
-        temporary_file="$(mktemp "${data_dir}/.jwtsecret.XXXXXX")"
+        temporary_file="$(mktemp "${config_dir}/.jwtsecret.XXXXXX")"
         openssl rand -hex 32 >"${temporary_file}"
         chmod 600 "${temporary_file}"
         mv -f -- "${temporary_file}" "${jwt_secret_file}"
@@ -1143,6 +1159,106 @@ function ensure_local_jwt_secret() {
 }
 
 ensure_local_jwt_secret
+
+function validate_p2p_private_key() {
+    local key_file="$1"
+    local description="$2"
+    local key
+
+    [[ -f "${key_file}" ]] || fail "Missing ${description}: ${key_file}"
+    key="$(cat "${key_file}")"
+    [[ "${key}" =~ ^[0-9a-fA-F]{64}$ && "$(wc -c < "${key_file}")" -eq 64 ]] \
+        || fail "${description} must contain exactly 32 bytes encoded as 64 hexadecimal characters: ${key_file}"
+    chmod 600 "${key_file}"
+}
+
+function preserve_private_key() {
+    local legacy_file="$1"
+    local config_file="$2"
+    local description="$3"
+
+    if [[ -e "${config_file}" ]]; then
+        validate_p2p_private_key "${config_file}" "${description}"
+        return 0
+    fi
+    [[ -s "${legacy_file}" ]] || return 1
+
+    cp -- "${legacy_file}" "${config_file}"
+    validate_p2p_private_key "${config_file}" "${description}"
+    color "32" "Preserved the existing ${description} in ${config_file}."
+}
+
+function validate_lighthouse_private_key() {
+    local key_file="$1"
+    local key_size
+
+    [[ -f "${key_file}" ]] || fail "Missing Lighthouse P2P private key: ${key_file}"
+    key_size="$(wc -c < "${key_file}")"
+    if [[ "${key_size}" -eq 64 ]]; then
+        grep -Eq '^[0-9a-fA-F]{64}$' "${key_file}" \
+            || fail "Invalid Lighthouse P2P private key: ${key_file}"
+    elif [[ "${key_size}" -ne 32 ]]; then
+        fail "Invalid Lighthouse P2P private key: ${key_file}"
+    fi
+    chmod 600 "${key_file}"
+}
+
+function prepare_geth_nodekey() {
+    preserve_private_key "${geth_data_dir}/geth/nodekey" "${geth_nodekey_file}" \
+        "Geth P2P private key" || true
+}
+
+function require_geth_nodekey() {
+    prepare_geth_nodekey
+    [[ -s "${geth_nodekey_file}" ]] \
+        || fail "Geth did not generate its P2P private key during initialization: ${geth_data_dir}/geth/nodekey"
+}
+
+function prepare_prysm_p2p_key() {
+    preserve_private_key "${beacon_data_dir}/network-keys" "${prysm_p2p_key_file}" \
+        "Prysm P2P private key" || true
+}
+
+function persist_generated_prysm_p2p_key() {
+    local attempt
+
+    [[ -s "${prysm_p2p_key_file}" ]] && return 0
+    for attempt in {1..15}; do
+        if [[ -s "${beacon_data_dir}/network-keys" ]]; then
+            prepare_prysm_p2p_key
+            return 0
+        fi
+        sleep 1
+    done
+    fail "Prysm did not create its persistent P2P private key: ${beacon_data_dir}/network-keys"
+}
+
+function prepare_lighthouse_network_identity() {
+    local legacy_network_dir="${beacon_data_dir}/network"
+
+    if [[ ! -s "${lighthouse_network_dir}/key" && -s "${legacy_network_dir}/key" ]]; then
+        mkdir -p "${lighthouse_network_dir}"
+        cp -a -- "${legacy_network_dir}/." "${lighthouse_network_dir}/"
+        color "32" "Preserved the existing Lighthouse network identity in ${lighthouse_network_dir}."
+    fi
+    mkdir -p "${lighthouse_network_dir}"
+    if [[ -e "${lighthouse_network_dir}/key" ]]; then
+        validate_lighthouse_private_key "${lighthouse_network_dir}/key"
+    fi
+}
+
+function persist_generated_lighthouse_network_identity() {
+    local attempt
+
+    for attempt in {1..15}; do
+        if [[ -s "${lighthouse_network_dir}/key" ]]; then
+            validate_lighthouse_private_key "${lighthouse_network_dir}/key"
+            return 0
+        fi
+        sleep 1
+    done
+    fail "Lighthouse did not create its persistent P2P private key: ${lighthouse_network_dir}/key"
+}
 
 function resolve_release() {
     local api_url="${github_api_url%/}/repos/${release_repo}/releases"
@@ -1791,6 +1907,13 @@ function deploy_binary_node() {
         stop_binary_service "${service}"
     done
 
+    prepare_geth_nodekey
+    if [[ "${consensus_client}" == "prysm" ]]; then
+        prepare_prysm_p2p_key
+    else
+        prepare_lighthouse_network_identity
+    fi
+
     if [[ ! -d "${geth_data_dir}/geth/chaindata" ]]; then
         color "34" "Initializing Geth from genesis.json."
         "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
@@ -1800,9 +1923,11 @@ function deploy_binary_node() {
         color "34" "Updating Geth chain configuration from genesis.json."
         "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
     fi
+    require_geth_nodekey
 
     geth_binary_args=(
         "--datadir=${geth_data_dir}"
+        "--nodekey=${geth_nodekey_file}"
         "--networkid=${network_id}"
         --port=30303
         --http
@@ -1843,6 +1968,11 @@ function deploy_binary_node() {
             --http-host=127.0.0.1
             --http-port=3500
         )
+        if [[ -s "${prysm_p2p_key_file}" ]]; then
+            beacon_binary_args+=("--p2p-priv-key=${prysm_p2p_key_file}")
+        else
+            beacon_binary_args+=(--p2p-static-id)
+        fi
         [[ -z "${node_public_ip}" ]] \
             || beacon_binary_args+=("--p2p-host-ip=${node_public_ip}")
         [[ "${genesis_mode}" == false ]] \
@@ -1856,6 +1986,7 @@ function deploy_binary_node() {
             bn
             "--testnet-dir=${share_dir}"
             "--datadir=${beacon_data_dir}"
+            "--network-dir=${lighthouse_network_dir}"
             --execution-endpoint=http://127.0.0.1:8551
             "--execution-jwt=${jwt_secret_file}"
             --http
@@ -1904,6 +2035,11 @@ function deploy_binary_node() {
 
     start_binary_service geth
     start_binary_service beacon
+    if [[ "${consensus_client}" == "prysm" ]]; then
+        persist_generated_prysm_p2p_key
+    else
+        persist_generated_lighthouse_network_identity
+    fi
     if [[ "${validator_mode}" == true ]]; then
         start_binary_service validator
     fi
@@ -1948,6 +2084,7 @@ function geth_chain_config_matches_release() {
 }
 
 replace_role_containers execution "${geth_data_dir}"
+prepare_geth_nodekey
 if [[ ! -d "${geth_data_dir}/geth/chaindata" ]]; then
     color "34" "Initializing Geth from genesis.json."
     docker run --rm \
@@ -1965,8 +2102,10 @@ else
         "${geth_image}" \
         --datadir=/data init /share/genesis.json
 fi
+require_geth_nodekey
 geth_args=(
     --datadir=/data
+    --nodekey=/node-config/nodekey
     "--networkid=${network_id}"
     --port=30303
     --http
@@ -1994,6 +2133,7 @@ docker run -d \
     --restart unless-stopped \
     --network host \
     -v "${geth_data_dir}:/data" \
+    -v "${geth_config_dir}:/node-config:ro" \
     -v "${share_dir}:/share:ro" \
     -v "${jwt_secret_file}:/jwtsecret:ro" \
     "${geth_image}" "${geth_args[@]}" >/dev/null
@@ -2006,6 +2146,7 @@ mapfile -t bootstrap_args < <(
 
 replace_role_containers consensus "${data_dir}/prysm" "${data_dir}/lighthouse"
 if [[ "${consensus_client}" == "prysm" ]]; then
+    prepare_prysm_p2p_key
     beacon_args=(
         --accept-terms-of-use=true
         --datadir=/data
@@ -2022,6 +2163,11 @@ if [[ "${consensus_client}" == "prysm" ]]; then
         --http-host=127.0.0.1
         --http-port=3500
     )
+    if [[ -s "${prysm_p2p_key_file}" ]]; then
+        beacon_args+=(--p2p-priv-key=/node-config/p2p.key)
+    else
+        beacon_args+=(--p2p-static-id)
+    fi
     [[ -z "${node_public_ip}" ]] || beacon_args+=("--p2p-host-ip=${node_public_ip}")
     [[ "${genesis_mode}" == false ]] && beacon_args+=("--checkpoint-sync-url=${checkpoint_url}")
     for enr in "${bootstrap_args[@]}"; do
@@ -2034,13 +2180,17 @@ if [[ "${consensus_client}" == "prysm" ]]; then
         --label "io.abpos.consensus-client=${consensus_client}" \
         --restart unless-stopped --network host \
         -v "${beacon_data_dir}:/data" -v "${share_dir}:/share:ro" \
+        -v "${prysm_config_dir}:/node-config:ro" \
         -v "${jwt_secret_file}:/jwtsecret:ro" \
         "${default_prysm_beacon_image}" "${beacon_args[@]}" >/dev/null
+    persist_generated_prysm_p2p_key
 else
+    prepare_lighthouse_network_identity
     beacon_args=(
         lighthouse bn
         --testnet-dir=/share
         --datadir=/data
+        --network-dir=/node-network
         --execution-endpoint=http://127.0.0.1:8551
         --execution-jwt=/jwtsecret
         --http
@@ -2062,8 +2212,10 @@ else
         --label "io.abpos.consensus-client=${consensus_client}" \
         --restart unless-stopped --network host \
         -v "${beacon_data_dir}:/data" -v "${share_dir}:/share:ro" \
+        -v "${lighthouse_network_dir}:/node-network" \
         -v "${jwt_secret_file}:/jwtsecret:ro" \
         "${default_lighthouse_image}" "${beacon_args[@]}" >/dev/null
+    persist_generated_lighthouse_network_identity
 fi
 
 function import_prysm_keys() {

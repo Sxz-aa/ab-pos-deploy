@@ -287,8 +287,15 @@ Important subdirectories and files include:
 |-- bin/                    Native binaries
 |-- run/                    Native launchers and PID files
 |-- logs/                   Native client logs
-`-- jwtsecret               Node-local Engine API secret
+`-- config/                 Node identity and Engine API authentication
+    |-- jwtsecret
+    |-- execution/geth/nodekey
+    `-- consensus/
+        |-- prysm/p2p.key
+        `-- lighthouse/network/
 ```
+
+The installer keeps node identity files outside the execution and beacon databases. Deleting a client database for a resync therefore does not change the node's execution enode or consensus peer ID. Existing installations are migrated automatically the next time the installer runs.
 
 Override the entire network directory:
 
