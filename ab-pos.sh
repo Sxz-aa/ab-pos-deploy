@@ -74,6 +74,7 @@ Core options:
   --data-dir PATH                Default: <root-dir>/<network>
   --keys-dir PATH                Keystores to import when supplied
   --password-file PATH           Keystore import or Prysm wallet password
+  --public-ip ADDRESS            Override Genesis Validator public IPv4 detection
   --docker                       Deploy containers; default
   --binary                       Deploy downloaded native binaries
   --yes                          Skip non-destructive confirmation prompts
@@ -123,6 +124,12 @@ function install_missing_dependencies() {
             tar) packages+=(tar) ;;
         esac
     done
+
+    if [[ "${genesis_mode}" == true && "${validator_mode}" == true \
+        && -z "${public_ip_override}" ]] \
+        && ! command -v dig >/dev/null 2>&1; then
+        packages+=(dnsutils)
+    fi
 
     for command_name in install sha256sum; do
         command -v "${command_name}" >/dev/null 2>&1 || needs_coreutils=true
@@ -174,6 +181,35 @@ function require_address() {
     [[ "${value}" =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "Invalid ${name}: ${value}"
 }
 
+function require_ipv4_address() {
+    local name="$1"
+    local address="$2"
+    local first
+    local second
+    local third
+    local fourth
+
+    [[ "${address}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] \
+        || fail "Invalid ${name}: ${address}"
+    IFS=. read -r first second third fourth <<<"${address}"
+    (( 10#${first} <= 255 && 10#${second} <= 255 \
+        && 10#${third} <= 255 && 10#${fourth} <= 255 )) \
+        || fail "Invalid ${name}: ${address}"
+}
+
+function detect_public_ipv4() {
+    local address
+
+    while IFS= read -r address; do
+        address="${address//[[:space:]]/}"
+        if [[ "${address}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            printf '%s\n' "${address}"
+            return 0
+        fi
+    done < <(dig -4 +short myip.opendns.com @resolver1.opendns.com 2>/dev/null)
+    return 1
+}
+
 function first_data_line() {
     local file="$1"
     [[ -f "${file}" ]] || return 0
@@ -211,6 +247,8 @@ password_file=""
 password_file_selected=false
 validator_count="1000"
 assume_yes=false
+public_ip_override=""
+node_public_ip=""
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
@@ -274,6 +312,7 @@ while [[ "$#" -gt 0 ]]; do
         --data-dir) data_dir="${2:-}"; shift ;;
         --keys-dir) keys_dir="${2:-}"; keys_dir_selected=true; shift ;;
         --password-file) password_file="${2:-}"; password_file_selected=true; shift ;;
+        --public-ip) public_ip_override="${2:-}"; shift ;;
         --docker)
             [[ "${deployment_mode_selected}" == false || "${deployment_mode}" == "docker" ]] \
                 || fail "--docker and --binary cannot be used together."
@@ -774,6 +813,32 @@ function show_consensus_status() {
     printf '  Finalized epoch: %s\n' "${finalized_epoch}"
 }
 
+function show_genesis_validator_node_information() {
+    local execution_response
+    local consensus_response
+    local execution_enode
+    local consensus_enr
+
+    [[ "${genesis_mode}" == true && "${validator_mode}" == true ]] || return 0
+
+    execution_response="$(curl -fsS --max-time 5 \
+        -H 'content-type: application/json' \
+        --data '{"jsonrpc":"2.0","method":"admin_nodeInfo","params":[],"id":1}' \
+        http://127.0.0.1:8545 2>/dev/null)" || execution_response=""
+    consensus_response="$(curl -fsS --max-time 5 \
+        http://127.0.0.1:3500/eth/v1/node/identity 2>/dev/null)" \
+        || consensus_response=""
+    execution_enode="$(jq -er '.result.enode' <<<"${execution_response}" 2>/dev/null)" \
+        || execution_enode="not ready"
+    consensus_enr="$(jq -er '.data.enr' <<<"${consensus_response}" 2>/dev/null)" \
+        || consensus_enr="not ready"
+
+    printf '\nGenesis Validator node information:\n'
+    printf '  Public IP: %s\n' "${node_public_ip}"
+    printf '  Execution enode: %s\n' "${execution_enode}"
+    printf '  Consensus ENR: %s\n' "${consensus_enr}"
+}
+
 function show_docker_service() {
     local service="$1"
     local container_name="$2"
@@ -1034,6 +1099,17 @@ if [[ "${deployment_mode}" == "docker" ]]; then
     ensure_docker_available
 else
     require_command setsid
+fi
+
+if [[ "${genesis_mode}" == true && "${validator_mode}" == true ]]; then
+    if [[ -n "${public_ip_override}" ]]; then
+        node_public_ip="${public_ip_override}"
+    else
+        require_command dig
+        node_public_ip="$(detect_public_ipv4)" \
+            || fail "Unable to detect the Genesis Validator public IPv4 address. Use --public-ip to specify it."
+    fi
+    require_ipv4_address "public IPv4 address" "${node_public_ip}"
 fi
 
 if [[ "${validator_mode}" == true ]]; then
@@ -1742,6 +1818,7 @@ function deploy_binary_node() {
     )
     [[ "${archive_mode}" == true ]] && geth_binary_args+=(--gcmode=archive)
     [[ -n "${bootnodes}" ]] && geth_binary_args+=("--bootnodes=${bootnodes}")
+    [[ -z "${node_public_ip}" ]] || geth_binary_args+=("--nat=extip:${node_public_ip}")
     write_binary_launcher geth "${bin_dir}/geth" "${geth_binary_args[@]}"
 
     mapfile -t binary_bootstrap_args < <(
@@ -1766,6 +1843,8 @@ function deploy_binary_node() {
             --http-host=127.0.0.1
             --http-port=3500
         )
+        [[ -z "${node_public_ip}" ]] \
+            || beacon_binary_args+=("--p2p-host-ip=${node_public_ip}")
         [[ "${genesis_mode}" == false ]] \
             && beacon_binary_args+=("--checkpoint-sync-url=${checkpoint_url}")
         for enr in "${binary_bootstrap_args[@]}"; do
@@ -1785,6 +1864,8 @@ function deploy_binary_node() {
             --port=13000
             --discovery-port=12000
         )
+        [[ -z "${node_public_ip}" ]] \
+            || beacon_binary_args+=("--enr-address=${node_public_ip}")
         [[ "${genesis_mode}" == false ]] \
             && beacon_binary_args+=("--checkpoint-sync-url=${checkpoint_url}")
         if [[ "${#binary_bootstrap_args[@]}" -gt 0 ]]; then
@@ -1839,6 +1920,7 @@ if [[ "${deployment_mode}" == "binary" ]]; then
     color "37" "Data directory: ${data_dir}"
     color "37" "Synchronization source: $([[ "${genesis_mode}" == true ]] && echo genesis || echo checkpoint)"
     show_binary_status true
+    show_genesis_validator_node_information
     exit 0
 fi
 
@@ -1903,6 +1985,7 @@ else
     geth_args+=(--syncmode=full)
 fi
 [[ -n "${bootnodes}" ]] && geth_args+=("--bootnodes=${bootnodes}")
+[[ -z "${node_public_ip}" ]] || geth_args+=("--nat=extip:${node_public_ip}")
 
 docker run -d \
     --name "${geth_container}" \
@@ -1939,6 +2022,7 @@ if [[ "${consensus_client}" == "prysm" ]]; then
         --http-host=127.0.0.1
         --http-port=3500
     )
+    [[ -z "${node_public_ip}" ]] || beacon_args+=("--p2p-host-ip=${node_public_ip}")
     [[ "${genesis_mode}" == false ]] && beacon_args+=("--checkpoint-sync-url=${checkpoint_url}")
     for enr in "${bootstrap_args[@]}"; do
         beacon_args+=("--bootstrap-node=${enr}")
@@ -1965,6 +2049,7 @@ else
         --port=13000
         --discovery-port=12000
     )
+    [[ -z "${node_public_ip}" ]] || beacon_args+=("--enr-address=${node_public_ip}")
     [[ "${genesis_mode}" == false ]] && beacon_args+=("--checkpoint-sync-url=${checkpoint_url}")
     if [[ "${#bootstrap_args[@]}" -gt 0 ]]; then
         lighthouse_bootnodes="$(IFS=,; echo "${bootstrap_args[*]}")"
@@ -2080,3 +2165,4 @@ color "37" "Execution image: ${geth_image}"
 color "37" "Data directory: ${data_dir}"
 color "37" "Synchronization source: $([[ "${genesis_mode}" == true ]] && echo genesis || echo checkpoint)"
 show_docker_status true
+show_genesis_validator_node_information
