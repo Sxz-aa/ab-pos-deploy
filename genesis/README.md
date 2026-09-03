@@ -231,14 +231,7 @@ genesis/config/
 The builder recursively finds every `deposit_data-*.json` file in the workspace and writes public results to `genesis/config/genesis-output`:
 
 ```bash
-GENESIS_GENERATOR_IMAGE=ethpandaops/ethereum-genesis-generator@sha256:REVIEWED_DIGEST \
 ./genesis/generate-abpos-genesis.sh
-```
-
-The explicit form is equivalent:
-
-```bash
-./genesis/generate-abpos-genesis.sh --deposit-data
 ```
 
 `GENESIS_TIMESTAMP` is `MIN_GENESIS_TIME`, not the final Beacon Genesis time. The configured `GENESIS_DELAY` is added by the consensus generator. An explicit reviewed timestamp should be configured for a coordinated network launch.
