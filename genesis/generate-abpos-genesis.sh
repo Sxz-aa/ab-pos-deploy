@@ -94,7 +94,7 @@ readonly requested_multiplier="${MULTIPLIER:-}"
 readonly requested_premine_address="${EL_PREMINE_ADDRESS:-}"
 readonly requested_base_fee_per_gas="${EL_BASE_FEE_PER_GAS:-}"
 readonly requested_config_name="${GENESIS_CONFIG_NAME:-}"
-readonly requested_deposit_network_name="${DEPOSIT_NETWORK_NAME:-}"
+readonly requested_network_name="${NETWORK_NAME:-}"
 readonly requested_min_validator_gwei="${MIN_VALIDATOR_GWEI:-}"
 readonly requested_max_validator_gwei="${MAX_VALIDATOR_GWEI:-}"
 
@@ -121,7 +121,7 @@ if [[ "${configured_genesis_timestamp}" == "0" ]]; then
     configured_genesis_timestamp="$(( $(date +%s) + 300 ))"
 fi
 readonly genesis_timestamp="${configured_genesis_timestamp}"
-readonly deposit_network_name="${requested_deposit_network_name:-${DEPOSIT_NETWORK_NAME:-abcore}}"
+readonly expected_network_name="${requested_network_name:-${NETWORK_NAME:-abcore}}"
 readonly min_validator_gwei="${requested_min_validator_gwei:-${MIN_VALIDATOR_GWEI:-32000000000}}"
 readonly max_validator_gwei="${requested_max_validator_gwei:-${MAX_VALIDATOR_GWEI:-2048000000000}}"
 readonly target_total_supply="${requested_target_total_supply:-${TARGET_TOTAL_SUPPLY:-}}"
@@ -276,8 +276,8 @@ function prepare_genesis_deposits() {
                 || fail "Deposit amount is outside the accepted range for ${pubkey}: ${amount}"
             [[ "${fork_version,,}" == "${expected_fork_clean,,}" ]] \
                 || fail "Fork version mismatch for ${pubkey}: expected ${genesis_fork_version}, got ${fork_version}"
-            [[ "${network_name}" == "${deposit_network_name}" ]] \
-                || fail "Network name mismatch for ${pubkey}: expected ${deposit_network_name}, got ${network_name}"
+            [[ "${network_name}" == "${expected_network_name}" ]] \
+                || fail "Network name mismatch for ${pubkey}: expected ${expected_network_name}, got ${network_name}"
 
             normalized_pubkey="0x${pubkey,,}"
             printf '%s\n' "${normalized_pubkey}" >> "${pubkeys_file}"

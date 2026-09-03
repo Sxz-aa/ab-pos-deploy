@@ -168,11 +168,18 @@ The Network Operator prepares the configuration, adds every accepted deposit fil
 ```bash
 cp -a genesis/config-template genesis/config
 vi genesis/config/values.env
+```
 
-mkdir -p genesis/config/validator-deposits
+Set `GENESIS_DELAY` with enough time to collect all node identities and publish the Final Release before the Beacon Genesis time.
+
+Copy every accepted deposit data file into `validator-deposits`. Subdirectories are also supported; the builder recursively reads every `deposit_data-*.json` file below this directory.
+
+```bash
 cp /secure/deposits/deposit_data-*.json \
   genesis/config/validator-deposits/
+```
 
+```bash
 ./genesis/generate-abpos-genesis.sh
 ```
 
@@ -197,7 +204,7 @@ touch \
 candidate_tag="v1.0.0-rc.1"
 ```
 
-`CONFIG_NAME` selects `abpos/testnet/share` or `abpos/mainnet/share`. `DEPOSIT_NETWORK_NAME` is used only to validate the network name recorded in deposit data.
+`NETWORK_NAME` identifies the chain and is checked against the network name recorded in deposit data. `CONFIG_NAME` selects `abpos/testnet/share` or `abpos/mainnet/share`.
 
 Commit the Candidate files and push a signed Candidate tag. GitHub publishes it as a Pre-release:
 
@@ -207,8 +214,6 @@ git commit -S -m "config: prepare ${network} Genesis Candidate"
 git tag -s "${candidate_tag}" -m "AB PoS ${network} Genesis Candidate ${candidate_tag}"
 git push origin main "${candidate_tag}"
 ```
-
-Allow enough time in `GENESIS_DELAY` to collect all node identities and publish the Final Release before the Beacon Genesis time.
 
 ## 7. Collect node information and publish the Final Release
 
