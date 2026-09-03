@@ -41,7 +41,7 @@ Build the selected network archive:
 make network VERSION=v1.2.3 RELEASE_PHASE=genesis
 ```
 
-Use `RELEASE_PHASE=post-genesis` after a trusted checkpoint provider has been published. That mode requires a valid `checkpoint_sync_urls.txt`.
+Use `RELEASE_PHASE=candidate` for a Genesis Candidate whose bootstrap node files have not yet been populated. Use `RELEASE_PHASE=genesis` for the Final Genesis archive; it requires valid consensus and execution bootstrap node lists. Use `RELEASE_PHASE=post-genesis` after a trusted checkpoint provider has been published.
 
 Build the patched static Geth binary:
 
@@ -86,16 +86,38 @@ Two Network Releases may contain the same AB Geth binary when the execution-clie
 
 ## GitHub Release workflows
 
-### Build a versioned Release
+### Build a Genesis Candidate
 
-Push a signed Network Release tag to GitHub:
+Push a signed release-candidate tag:
+
+```bash
+git tag -s v1.2.3-rc.1 -m "AB PoS testnet Genesis Candidate v1.2.3-rc.1"
+git push <github-remote> v1.2.3-rc.1
+```
+
+The workflow publishes this tag as a GitHub Pre-release. Candidate validation permits missing or empty `bootstrap_nodes.txt` and `bootstrap_nodes_execution.txt`. Genesis Validator Operators install this exact tag, then return the execution enode and consensus ENR printed by `ab-pos.sh`.
+
+### Build the Final Genesis Release
+
+Add the reviewed enodes and ENRs to the two bootstrap node files without changing any Genesis or client configuration file. Commit that update, then push the matching Final tag:
 
 ```bash
 git tag -s v1.2.3 -m "AB PoS testnet v1.2.3"
 git push <github-remote> v1.2.3
 ```
 
-The workflow performs the following operations:
+Before publishing a Final Genesis Release, the workflow downloads the newest matching `v1.2.3-rc.NUMBER` Pre-release and verifies that its Genesis, client configuration, and public Genesis metadata are byte-for-byte identical. The bootstrap node lists are the only files allowed to be completed between Candidate and Final.
+
+### Build a versioned post-genesis Release
+
+After finalization, add the reviewed checkpoint URL and push a new signed stable tag:
+
+```bash
+git tag -s v1.2.4 -m "AB PoS testnet v1.2.4"
+git push <github-remote> v1.2.4
+```
+
+For each Candidate, Final Genesis, or post-genesis tag, the workflow performs the following operations:
 
 1. Validates and packages the network files.
 2. Checks whether `ghcr.io/abdaodev/ab-geth:<AB_GETH_VERSION>` already exists.
@@ -104,7 +126,7 @@ The workflow performs the following operations:
 5. Produces the AB Geth binary checksum.
 6. Publishes all files in a versioned GitHub Release without marking it as latest.
 
-The versioned Release can be tested explicitly with `ab-pos.sh --release <tag>`. This workflow does not change the latest GitHub Release or the AB Geth `latest` image tag.
+Every versioned Release can be tested explicitly with `ab-pos.sh --release <tag>`. Candidate tags are Pre-releases and are never eligible for Latest or the AB Geth `latest` image tag. Building a versioned Release does not otherwise change either Latest pointer.
 
 ### Publish and promote a Release
 

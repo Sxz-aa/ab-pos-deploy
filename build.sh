@@ -15,7 +15,7 @@ Usage:
   ./build.sh --check NETWORK RELEASE_PHASE
   ./build.sh VERSION NETWORK RELEASE_PHASE
 
-RELEASE_PHASE must be genesis or post-genesis.
+RELEASE_PHASE must be candidate, genesis, or post-genesis.
 USAGE
 }
 
@@ -45,6 +45,13 @@ function require_data_line_file() {
 
     [[ -s "${path}" ]] || fail "required ${label} file is missing or empty: ${path}"
     [[ -n "$(effective_lines "${path}")" ]] || fail "${label} file has no usable entries: ${path}"
+}
+
+function validate_unique_line_file() {
+    local path="$1"
+    local label="$2"
+
+    [[ -f "${path}" ]] || return 0
     [[ -z "$(effective_lines "${path}" | sort | uniq -d | head -n 1)" ]] \
         || fail "${label} file contains duplicate entries: ${path}"
 }
@@ -136,15 +143,19 @@ function validate_network() {
 
     [[ "${target_network}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid network name: ${target_network}"
     case "${target_phase}" in
-        genesis|post-genesis) ;;
-        *) fail "RELEASE_PHASE must be genesis or post-genesis; got: ${target_phase}" ;;
+        candidate|genesis|post-genesis) ;;
+        *) fail "RELEASE_PHASE must be candidate, genesis, or post-genesis; got: ${target_phase}" ;;
     esac
 
     [[ -d "${target_share_dir}" ]] || fail "network share directory not found: ${target_share_dir}"
     for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
-        deposit_contract_block.txt bootstrap_nodes.txt bootstrap_nodes_execution.txt; do
+        deposit_contract_block.txt; do
         [[ -s "${target_share_dir}/${required_file}" ]] || fail "required network file is missing or empty: ${target_share_dir}/${required_file}"
     done
+    if [[ "${target_phase}" != "candidate" ]]; then
+        require_data_line_file "${target_share_dir}/bootstrap_nodes.txt" "beacon bootstrap node"
+        require_data_line_file "${target_share_dir}/bootstrap_nodes_execution.txt" "Geth enode"
+    fi
     [[ ! -e "${target_share_dir}/jwtsecret" ]] \
         || fail "jwtsecret is node-local authentication material and must not be included in the network share"
     while IFS= read -r -d '' share_entry; do
@@ -267,14 +278,19 @@ function validate_network() {
             || fail "config.prysm.yaml SLOT_DURATION_MS must equal SECONDS_PER_SLOT * 1000"
     fi
 
-    require_data_line_file "${target_share_dir}/bootstrap_nodes.txt" "beacon bootstrap node"
-    require_data_line_file "${target_share_dir}/bootstrap_nodes_execution.txt" "Geth enode"
     validate_line_file "${target_share_dir}/bootstrap_nodes.txt" "beacon bootstrap node" '^enr:[A-Za-z0-9_-]+$'
     validate_line_file "${target_share_dir}/bootstrap_nodes_execution.txt" "Geth enode" '^enode://[0-9a-fA-F]{128}@[^[:space:]@]+:[0-9]{1,5}$'
     validate_line_file "${target_share_dir}/checkpoint_sync_urls.txt" "checkpoint URL" '^https?://[^[:space:]]+$'
+    validate_unique_line_file "${target_share_dir}/bootstrap_nodes.txt" "beacon bootstrap node"
+    validate_unique_line_file "${target_share_dir}/bootstrap_nodes_execution.txt" "Geth enode"
+    validate_unique_line_file "${target_share_dir}/checkpoint_sync_urls.txt" "checkpoint URL"
 
     if [[ "${target_phase}" == "post-genesis" ]]; then
         require_data_line_file "${target_share_dir}/checkpoint_sync_urls.txt" "checkpoint URL"
+    elif [[ "${target_phase}" == "candidate" ]]; then
+        printf '%s\n' \
+            "INFO: Genesis Candidate validation allows empty bootstrap node files." \
+            "      Populate both lists before building the final Genesis Release."
     elif [[ ! -s "${target_share_dir}/checkpoint_sync_urls.txt" ]]; then
         printf '%s\n' \
             "INFO: checkpoint_sync_urls.txt is absent. This is valid for a genesis release;" \

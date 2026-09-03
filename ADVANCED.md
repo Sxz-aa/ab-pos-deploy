@@ -181,6 +181,8 @@ sudo ./ab-pos.sh testnet prysm geth --release v1.2.3
 
 Pinning a tag makes repeated deployment deterministic as long as published assets and exact image tags remain immutable.
 
+A Genesis Candidate is a Pre-release and is never returned by `/releases/latest`. Genesis participants must select its exact `vMAJOR.MINOR.PATCH-rc.NUMBER` tag with `--release`.
+
 ### 4.3 Different Release repository
 
 ```bash

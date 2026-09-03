@@ -45,6 +45,21 @@ jobs:
           [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
             || { printf 'ERROR: invalid Network Release tag: %s\n' "${RELEASE_TAG}" >&2; exit 1; }
 
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
+          [[ "$(jq -r '.tag_name' <<<"${release_json}")" == "${RELEASE_TAG}" ]] \
+            || { printf 'ERROR: Release tag does not match %s.\n' "${RELEASE_TAG}" >&2; exit 1; }
+          if [[ "$(jq -r '.prerelease' <<<"${release_json}")" == "true" ]]; then
+            if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+              printf 'ERROR: a Genesis Candidate Pre-release cannot be promoted: %s\n' \
+                "${RELEASE_TAG}" >&2
+              exit 1
+            fi
+            printf 'promote=false\n' >>"${GITHUB_OUTPUT}"
+            printf 'Candidate Pre-release %s is not eligible for Latest or Docker latest.\n' \
+              "${RELEASE_TAG}"
+            exit 0
+          fi
+
           if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]]; then
             latest_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null || true)"
             if [[ "${latest_tag}" != "${RELEASE_TAG}" ]]; then
@@ -54,10 +69,6 @@ jobs:
               exit 0
             fi
           fi
-
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
-          [[ "$(jq -r '.tag_name' <<<"${release_json}")" == "${RELEASE_TAG}" ]] \
-            || { printf 'ERROR: Release tag does not match %s.\n' "${RELEASE_TAG}" >&2; exit 1; }
 
           mapfile -t network_archives < <(
             jq -r --arg tag "${RELEASE_TAG}" '

@@ -18,8 +18,8 @@ The central security boundary is simple: each Validator Operator keeps all signi
 
 | Participant | Responsibility |
 | --- | --- |
-| Genesis Validator Operator | Generate and back up validator keys, then send only `deposit_data-*.json` to the Network Operator. After the Release is published, start one validator client with the original keys. |
-| Network Operator | Collect and validate deposit data, build and publish the Genesis Release, start the initial network nodes, and publish checkpoint URLs after finalization. |
+| Genesis Validator Operator | Generate and back up validator keys, send `deposit_data-*.json`, then start the Candidate Release and return the displayed public enode and ENR. |
+| Network Operator | Build the Genesis Candidate, collect public node identities, publish the Final Genesis Release, and publish checkpoint URLs after finalization. |
 
 The Network Operator never needs another operator's mnemonic, password, keystores, signing keys, or slashing protection data.
 
@@ -34,12 +34,17 @@ Genesis Validator Operator
 Network Operator
   -> validate and combine deposit records
   -> build genesis.json and genesis.ssz
-  -> prepare client configuration and bootnodes
-  -> publish the initial Genesis Release and checksum
+  -> publish a Genesis Candidate Pre-release
 
 Genesis Validator Operator
-  -> verify the Release
-  -> run ab-pos.sh --genesis --validator with the original keys
+  -> run ab-pos.sh --genesis --validator with the Candidate and original keys
+  -> send the displayed execution enode and consensus ENR
+
+Network Operator
+  -> publish the Final Genesis Release with the collected bootnodes
+
+Genesis Validator Operator
+  -> run ab-pos.sh again with the Final Genesis Release
   -> confirm duties and finality
 
 Network Operator
@@ -187,8 +192,9 @@ The Network Operator workflow is:
 2. Review and edit `genesis/config/values.env`.
 3. Place all accepted `deposit_data-*.json` files under `genesis/config/validator-deposits`.
 4. Run `generate-abpos-genesis.sh` and review `genesis/config/genesis-output`.
-5. Start the stable initial nodes and collect their Beacon ENRs and Geth enodes.
-6. Place the approved public Genesis files and bootnodes under `abpos/<network>/share` and build the Network Release.
+5. Place the approved public Genesis files under `abpos/<network>/share` and publish a Candidate Pre-release.
+6. Ask Genesis Validator Operators to start the Candidate and return their displayed Beacon ENRs and Geth enodes.
+7. Populate both bootstrap node files and publish the Final Genesis Release.
 
 ### 6.1 Prepare a Genesis configuration
 
@@ -283,11 +289,11 @@ The current installer consumes the following files:
 | `deposit_contract_block.txt` | Yes | Execution-layer deposit contract deployment block used by Lighthouse |
 | `deposit_contract_block_hash.txt` | No | Deposit contract deployment block hash |
 | `genesis_validators_root.txt` | No | Published consensus genesis validators root |
-| `bootstrap_nodes.txt` | Yes | Beacon ENR list, one per line |
-| `bootstrap_nodes_execution.txt` | Yes | Geth enode list, one per line |
+| `bootstrap_nodes.txt` | Final Genesis and post-genesis Releases | Beacon ENR list, one per line |
+| `bootstrap_nodes_execution.txt` | Final Genesis and post-genesis Releases | Geth enode list, one per line |
 | `checkpoint_sync_urls.txt` | Required after genesis | Trusted Beacon API checkpoint provider URLs, one per line |
 
-Do not include `jwtsecret` in the network share or Release. The installer generates a private JWT secret under each node's data directory and supplies the same local file to its execution and consensus clients.
+Do not include `jwtsecret` in the network share or Release. The installer generates a private JWT secret under each node's `config/` directory and supplies the same local file to its execution and consensus clients.
 
 The installer requires an explicit `--checkpoint-url` when `checkpoint_sync_urls.txt` is absent and the node is not using `--genesis`.
 
@@ -301,12 +307,15 @@ https://checkpoint-2.example.org
 
 The URL must point to a compatible Beacon API checkpoint-sync service, not an execution-layer JSON-RPC endpoint. Verify its finalized root through an independent trusted source before publishing it.
 
-### 7.1 Two-release lifecycle
+### 7.1 Release lifecycle
 
-1. The initial Genesis Release contains the verified genesis files and bootnodes. A finalized checkpoint does not exist yet.
-2. Genesis nodes start with `--genesis`.
-3. After the network finalizes, the Network Operator publishes trusted checkpoint provider URLs.
-4. A newer post-genesis Release includes `checkpoint_sync_urls.txt` and becomes the default Release for ordinary RPC, validator, and archive nodes.
+1. A Candidate tag such as `v1.0.0-rc.1` publishes a GitHub Pre-release. Its bootstrap node files may be absent or empty.
+2. Genesis Validator Operators start that exact Candidate with `--release v1.0.0-rc.1 --genesis --validator` and return the displayed enode and ENR.
+3. The Network Operator adds the collected node identities and publishes the Final Genesis Release, such as `v1.0.0`.
+4. Genesis Validator Operators rerun the installer against the Final Release. Their chain data, validator data, JWT, and P2P identities are preserved.
+5. After the network finalizes, a newer post-genesis Release includes trusted checkpoint provider URLs and becomes the default Release for ordinary nodes.
+
+The Candidate and Final Release must contain identical Genesis and client configuration files. Only the bootstrap node lists are completed between those two releases. The GitHub workflow verifies this before publishing the Final Genesis Release.
 
 Do not advertise the default post-genesis command until the latest Release contains a working trusted checkpoint URL.
 
@@ -314,13 +323,21 @@ Do not advertise the default post-genesis command until the latest Release conta
 
 This repository follows the packaging pattern used by `ABFoundationGlobal/ab-deploy`. The Genesis Builder produces candidate public network files; `make network` packages only the files that the Network Operator has reviewed and placed under `abpos/<network>/share`.
 
-Build the initial package before a checkpoint exists:
+Build the Candidate before bootstrap nodes have been collected:
+
+```bash
+make testnet VERSION=v1.0.0-rc.1 RELEASE_PHASE=candidate
+```
+
+Candidate validation permits absent or empty `bootstrap_nodes.txt` and `bootstrap_nodes_execution.txt`. Publish the signed `v1.0.0-rc.1` tag; the GitHub workflow marks the resulting Release as a Pre-release.
+
+After collecting and reviewing the public enodes and ENRs, populate both bootstrap node files and build the Final Genesis package:
 
 ```bash
 make testnet VERSION=v1.0.0 RELEASE_PHASE=genesis
 ```
 
-In this phase, a missing `checkpoint_sync_urls.txt` produces an informational message. The package is valid only for nodes started with `--genesis`; an ordinary node must provide `--checkpoint-url` explicitly.
+Final Genesis validation requires both bootstrap node files to contain valid, unique entries. A missing `checkpoint_sync_urls.txt` is valid before finalization.
 
 After finalization, add at least one verified URL and build the ordinary-node package with strict post-genesis validation:
 
@@ -345,21 +362,25 @@ cd build
 sha256sum --check abpos-testnet-v1.0.0.tar.gz.sha256
 ```
 
-Publish a signed version tag to the GitHub repository:
+Publish signed Candidate and Final tags to the GitHub repository:
 
 ```bash
+git tag -s v1.0.0-rc.1 -m "AB PoS testnet Genesis Candidate v1.0.0-rc.1"
+git push <github-remote> v1.0.0-rc.1
+
 git tag -s v1.0.0 -m "AB PoS testnet v1.0.0"
 git push <github-remote> v1.0.0
 ```
 
-Pushing a `v*` tag runs the GitHub build workflow and publishes a versioned Release without making it the latest Release. Test that version explicitly, then edit the Release and select **Set as the latest release**; the promotion workflow synchronizes the Docker `latest` tag automatically. The manual **Promote AB PoS release** workflow remains available for retries. The tag must reach GitHub; pushing it only to a GitLab remote does not run the workflows under `.github/workflows/`.
+Pushing a Candidate tag publishes a Pre-release that cannot be promoted to Latest. Pushing the matching Final tag verifies it against the newest matching Candidate and publishes a normal versioned Release without making it Latest. Test the Final Release explicitly, then edit it and select **Set as the latest release**; the promotion workflow synchronizes the Docker `latest` tag automatically. The manual **Promote AB PoS release** workflow remains available for retries.
 
-## 8. Start genesis nodes after publication
+## 8. Start genesis nodes from the Candidate
 
 ### 8.1 Genesis RPC node
 
 ```bash
 sudo ./ab-pos.sh testnet prysm geth \
+  --release v1.0.0-rc.1 \
   --genesis
 ```
 
@@ -371,6 +392,7 @@ Use the same keystores that were represented in the accepted genesis deposit dat
 
 ```bash
 sudo ./ab-pos.sh testnet prysm geth \
+  --release v1.0.0-rc.1 \
   --genesis \
   --validator \
   --fee-recipient 0x0000000000000000000000000000000000000000
@@ -387,6 +409,7 @@ Override them when necessary:
 
 ```bash
 sudo ./ab-pos.sh testnet lighthouse geth \
+  --release v1.0.0-rc.1 \
   --genesis \
   --validator \
   --keys-dir /secure/operator-a/validator_keys \
@@ -395,6 +418,19 @@ sudo ./ab-pos.sh testnet lighthouse geth \
 ```
 
 Genesis validator mode refuses to generate replacement keys. Newly generated pubkeys would not exist in `genesis.ssz` and could not act as genesis validators.
+
+At the end of a Genesis Validator installation, send only the displayed execution enode and consensus ENR to the Network Operator. These are public node addresses; do not send any file from `keys/` or `config/`.
+
+After the Final Genesis Release is published, rerun the same installation with the Final tag:
+
+```bash
+sudo ./ab-pos.sh testnet prysm geth \
+  --release v1.0.0 \
+  --genesis \
+  --validator
+```
+
+The installer reuses the imported validator wallet and saved fee recipient, and preserves both P2P identities.
 
 ## 9. Security rules
 

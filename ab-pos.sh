@@ -1415,12 +1415,20 @@ function download_release() {
     fi
 
     for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
-        deposit_contract_block.txt bootstrap_nodes.txt bootstrap_nodes_execution.txt; do
+        deposit_contract_block.txt; do
         if [[ ! -s "${temporary_share_dir}/${required_file}" ]]; then
             rm -rf -- "${temporary_share_dir}"
             fail "The network Release is missing required file: ${required_file}"
         fi
     done
+    if [[ "${genesis_mode}" == false ]]; then
+        for required_file in bootstrap_nodes.txt bootstrap_nodes_execution.txt; do
+            if [[ ! -s "${temporary_share_dir}/${required_file}" ]]; then
+                rm -rf -- "${temporary_share_dir}"
+                fail "The network Release is missing required file: ${required_file}"
+            fi
+        done
+    fi
 
     previous_share_dir="$(mktemp -d "${data_dir}/.share.previous.XXXXXX")"
     rmdir -- "${previous_share_dir}"
@@ -1441,9 +1449,15 @@ resolve_release
 download_release
 
 for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
-    deposit_contract_block.txt bootstrap_nodes.txt bootstrap_nodes_execution.txt; do
+    deposit_contract_block.txt; do
     [[ -s "${share_dir}/${required_file}" ]] || fail "Missing required file: ${share_dir}/${required_file}"
 done
+if [[ "${genesis_mode}" == false ]]; then
+    for required_file in bootstrap_nodes.txt bootstrap_nodes_execution.txt; do
+        [[ -s "${share_dir}/${required_file}" ]] \
+            || fail "Missing required file: ${share_dir}/${required_file}"
+    done
+fi
 
 if [[ "${genesis_mode}" == false && -z "${checkpoint_url}" ]]; then
     checkpoint_url="$(first_data_line "${share_dir}/checkpoint_sync_urls.txt")"
