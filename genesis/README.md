@@ -262,6 +262,8 @@ share_dir="abpos/${network}/share"
 vi "${share_dir}/bootstrap_nodes.txt"
 vi "${share_dir}/bootstrap_nodes_execution.txt"
 
+make verify-bootnodes NETWORK="${network}"
+
 final_tag="v1.0.0"
 git add \
   "${share_dir}/bootstrap_nodes.txt" \
@@ -270,6 +272,8 @@ git commit -S -m "config: add ${network} Genesis bootstrap nodes"
 git tag -s "${final_tag}" -m "AB PoS ${network} ${final_tag}"
 git push origin main "${final_tag}"
 ```
+
+Run the live verification while every submitted node is online. It validates each signed ENR, performs a Discovery v5 ping and resolution, and completes an RLPx handshake with each execution node. The first run builds the local `devp2p` verification tool with Docker.
 
 When a matching Candidate Release exists, the Final Release workflow verifies that only the two node lists changed.
 

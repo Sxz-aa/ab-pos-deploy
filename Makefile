@@ -13,12 +13,13 @@ GETH_IMAGE ?= ghcr.io/abdaodev/ab-geth
 GETH_PLATFORM ?= linux/amd64
 GETH_ARCH := $(word 2,$(subst /, ,$(GETH_PLATFORM)))
 GETH_ARTIFACT := $(BUILD_DIR)/ab-geth-$(AB_GETH_VERSION)-linux-$(GETH_ARCH)
+DEVP2P_ARTIFACT := $(BUILD_DIR)/devp2p-$(GETH_VERSION)-linux-$(GETH_ARCH)
 GETH_PATCHES := $(wildcard patches/go-ethereum/*.patch)
 
 export ROOT_DIR BUILD_DIR NETWORK VERSION RELEASE_PHASE
 export GETH_REPOSITORY GETH_VERSION AB_GETH_VERSION GETH_IMAGE GETH_PLATFORM
 
-.PHONY: all network testnet mainnet check geth geth-version docker push-docker clean
+.PHONY: all network testnet mainnet check geth geth-version devp2p verify-bootnodes docker push-docker clean
 
 all: network geth docker
 
@@ -38,6 +39,10 @@ check:
 	@test -x scripts/prepare-geth-source.sh || { echo "ERROR: scripts/prepare-geth-source.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/build-geth.sh || { echo "ERROR: scripts/build-geth.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/build-geth-docker.sh || { echo "ERROR: scripts/build-geth-docker.sh is missing or not executable." >&2; exit 1; }
+	@test -x scripts/build-devp2p.sh || { echo "ERROR: scripts/build-devp2p.sh is missing or not executable." >&2; exit 1; }
+	@test -x scripts/verify-bootnodes.sh || { echo "ERROR: scripts/verify-bootnodes.sh is missing or not executable." >&2; exit 1; }
+	@bash -n scripts/build-devp2p.sh
+	@bash -n scripts/verify-bootnodes.sh
 	@test -x scripts/geth-build-fingerprint.sh || { echo "ERROR: scripts/geth-build-fingerprint.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/export-geth-image.sh || { echo "ERROR: scripts/export-geth-image.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/prepare-geth-release.sh || { echo "ERROR: scripts/prepare-geth-release.sh is missing or not executable." >&2; exit 1; }
@@ -45,6 +50,7 @@ check:
 	@test -x genesis/generate-abpos-genesis.sh || { echo "ERROR: genesis/generate-abpos-genesis.sh is missing or not executable." >&2; exit 1; }
 	@bash -n genesis/generate-abpos-genesis.sh
 	@test -f docker/geth/Dockerfile || { echo "ERROR: docker/geth/Dockerfile is missing." >&2; exit 1; }
+	@test -f docker/geth/Devp2p.Dockerfile || { echo "ERROR: docker/geth/Devp2p.Dockerfile is missing." >&2; exit 1; }
 	@compgen -G 'patches/go-ethereum/*.patch' >/dev/null || { echo "ERROR: no Geth patches found under patches/go-ethereum/." >&2; exit 1; }
 
 geth: $(GETH_ARTIFACT)
@@ -54,6 +60,14 @@ $(GETH_ARTIFACT): scripts/prepare-geth-source.sh scripts/build-geth.sh scripts/g
 
 geth-version:
 	@printf '%s\n' "$(AB_GETH_VERSION)"
+
+devp2p: $(DEVP2P_ARTIFACT)
+
+$(DEVP2P_ARTIFACT): scripts/prepare-geth-source.sh scripts/build-devp2p.sh docker/geth/Devp2p.Dockerfile $(GETH_PATCHES)
+	./scripts/build-devp2p.sh
+
+verify-bootnodes: check devp2p
+	DEVP2P_BIN="$(DEVP2P_ARTIFACT)" ./scripts/verify-bootnodes.sh "$(NETWORK)"
 
 docker: geth docker/geth/Runtime.Dockerfile scripts/build-geth-docker.sh
 	./scripts/build-geth-docker.sh
