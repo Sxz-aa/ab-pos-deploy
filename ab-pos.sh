@@ -74,7 +74,7 @@ Core options:
   --data-dir PATH                Default: <root-dir>/<network>
   --keys-dir PATH                Keystores to import when supplied
   --password-file PATH           Keystore import or Prysm wallet password
-  --public-ip ADDRESS            Override Genesis Validator public IPv4 detection
+  --public-ip ADDRESS            Override Genesis node public IPv4 detection
   --docker                       Deploy containers; default
   --binary                       Deploy downloaded native binaries
   --yes                          Skip non-destructive confirmation prompts
@@ -125,8 +125,7 @@ function install_missing_dependencies() {
         esac
     done
 
-    if [[ "${genesis_mode}" == true && "${validator_mode}" == true \
-        && -z "${public_ip_override}" ]] \
+    if [[ "${genesis_mode}" == true && -z "${public_ip_override}" ]] \
         && ! command -v dig >/dev/null 2>&1; then
         packages+=(dnsutils)
     fi
@@ -822,13 +821,13 @@ function show_consensus_status() {
     printf '  Finalized epoch: %s\n' "${finalized_epoch}"
 }
 
-function show_genesis_validator_node_information() {
+function show_genesis_node_information() {
     local execution_response
     local consensus_response
     local execution_enode
     local consensus_enr
 
-    [[ "${genesis_mode}" == true && "${validator_mode}" == true ]] || return 0
+    [[ "${genesis_mode}" == true ]] || return 0
 
     execution_response="$(curl -fsS --max-time 5 \
         -H 'content-type: application/json' \
@@ -842,7 +841,7 @@ function show_genesis_validator_node_information() {
     consensus_enr="$(jq -er '.data.enr' <<<"${consensus_response}" 2>/dev/null)" \
         || consensus_enr="not ready"
 
-    printf '\nGenesis Validator node information:\n'
+    printf '\nGenesis node information:\n'
     printf '  Public IP: %s\n' "${node_public_ip}"
     printf '  Execution enode: %s\n' "${execution_enode}"
     printf '  Consensus ENR: %s\n' "${consensus_enr}"
@@ -1110,13 +1109,13 @@ else
     require_command setsid
 fi
 
-if [[ "${genesis_mode}" == true && "${validator_mode}" == true ]]; then
+if [[ "${genesis_mode}" == true ]]; then
     if [[ -n "${public_ip_override}" ]]; then
         node_public_ip="${public_ip_override}"
     else
         require_command dig
         node_public_ip="$(detect_public_ipv4)" \
-            || fail "Unable to detect the Genesis Validator public IPv4 address. Use --public-ip to specify it."
+            || fail "Unable to detect the Genesis node public IPv4 address. Use --public-ip to specify it."
     fi
     require_ipv4_address "public IPv4 address" "${node_public_ip}"
 fi
@@ -2070,7 +2069,7 @@ if [[ "${deployment_mode}" == "binary" ]]; then
     color "37" "Data directory: ${data_dir}"
     color "37" "Synchronization source: $([[ "${genesis_mode}" == true ]] && echo genesis || echo checkpoint)"
     show_binary_status true
-    show_genesis_validator_node_information
+    show_genesis_node_information
     exit 0
 fi
 
@@ -2331,4 +2330,4 @@ color "37" "Execution image: ${geth_image}"
 color "37" "Data directory: ${data_dir}"
 color "37" "Synchronization source: $([[ "${genesis_mode}" == true ]] && echo genesis || echo checkpoint)"
 show_docker_status true
-show_genesis_validator_node_information
+show_genesis_node_information

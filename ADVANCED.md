@@ -319,16 +319,15 @@ sudo ./ab-pos.sh testnet prysm geth \
 
 Never run the same validator pubkey from two validator clients. Preserve the validator client data directory when upgrading because it contains slashing protection state.
 
-### 6.1 Genesis Validator public IP
+### 6.1 Genesis node public IP
 
-For `--genesis --validator`, the installer detects the server's public IPv4 address through the same OpenDNS lookup used by the AB deployment tooling. It configures that address for both the execution and consensus clients and prints the resulting execution enode and consensus ENR when installation finishes.
+For every `--genesis` deployment, the installer detects the server's public IPv4 address through the same OpenDNS lookup used by the AB deployment tooling. It configures that address for both the execution and consensus clients and prints the resulting execution enode and consensus ENR when installation finishes.
 
 If the displayed address is not the public address through which peers reach this server, repeat the same installation command with an explicit address:
 
 ```bash
 sudo ./ab-pos.sh testnet prysm geth \
   --genesis \
-  --validator \
   --public-ip 203.0.113.10
 ```
 
