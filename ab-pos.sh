@@ -712,18 +712,46 @@ function prysm_import_was_duplicate_only() {
         && -n "$(grep -F 'no accounts were successfully imported' "${import_log}" || true)" ]]
 }
 
-function wait_for_consensus_api() {
-    local deadline=$((SECONDS + 30))
+function execution_api_ready() {
+    local response
 
-    while (( SECONDS < deadline )); do
-        if curl -fsS --max-time 2 \
-            http://127.0.0.1:3500/eth/v1/node/syncing >/dev/null 2>&1; then
+    response="$(curl -fsS --max-time 2 \
+        -H 'content-type: application/json' \
+        --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+        http://127.0.0.1:8545 2>/dev/null)" || return 1
+    jq -e '.result | type == "string" and test("^0x[0-9a-fA-F]+$")' \
+        <<<"${response}" >/dev/null 2>&1
+}
+
+function consensus_api_ready() {
+    curl -fsS --max-time 2 \
+        http://127.0.0.1:3500/eth/v1/node/syncing 2>/dev/null \
+        | jq -e '.data | type == "object"' >/dev/null 2>&1
+}
+
+function wait_for_node_apis() {
+    local deadline=$((SECONDS + 30))
+    local execution_ready=false
+    local consensus_ready=false
+    local waiting_message_shown=false
+
+    while true; do
+        if [[ "${execution_ready}" == false ]] && execution_api_ready; then
+            execution_ready=true
+        fi
+        if [[ "${consensus_ready}" == false ]] && consensus_api_ready; then
+            consensus_ready=true
+        fi
+        if [[ "${execution_ready}" == true && "${consensus_ready}" == true ]]; then
             return 0
+        fi
+        (( SECONDS < deadline )) || return 1
+        if [[ "${waiting_message_shown}" == false ]]; then
+            printf '\nWaiting for node APIs.\n'
+            waiting_message_shown=true
         fi
         sleep 2
     done
-    curl -fsS --max-time 2 \
-        http://127.0.0.1:3500/eth/v1/node/syncing >/dev/null 2>&1
 }
 
 function show_execution_status() {
@@ -751,7 +779,8 @@ function show_execution_status() {
         || block_hex=""
     peer_hex="$(jq -er '.result | select(type == "string")' <<<"${peer_response}" 2>/dev/null)" \
         || peer_hex=""
-    sync_value="$(jq -cer '.result' <<<"${sync_response}" 2>/dev/null)" || sync_value=""
+    sync_value="$(jq -cr 'if has("result") then .result else empty end' \
+        <<<"${sync_response}" 2>/dev/null)" || sync_value=""
 
     printf '\nExecution:\n'
     if [[ ! "${block_hex}" =~ ^0x[0-9a-fA-F]+$ \
@@ -824,27 +853,48 @@ function show_consensus_status() {
 function show_genesis_node_information() {
     local execution_response
     local consensus_response
-    local execution_enode
-    local consensus_enr
+    local execution_enode="not ready"
+    local consensus_enr="not ready"
+    local identity_deadline
+    local waiting_message_shown=false
 
     [[ "${genesis_mode}" == true ]] || return 0
+    identity_deadline=$((SECONDS + 30))
 
-    execution_response="$(curl -fsS --max-time 5 \
-        -H 'content-type: application/json' \
-        --data '{"jsonrpc":"2.0","method":"admin_nodeInfo","params":[],"id":1}' \
-        http://127.0.0.1:8545 2>/dev/null)" || execution_response=""
-    consensus_response="$(curl -fsS --max-time 5 \
-        http://127.0.0.1:3500/eth/v1/node/identity 2>/dev/null)" \
-        || consensus_response=""
-    execution_enode="$(jq -er '.result.enode' <<<"${execution_response}" 2>/dev/null)" \
-        || execution_enode="not ready"
-    consensus_enr="$(jq -er '.data.enr' <<<"${consensus_response}" 2>/dev/null)" \
-        || consensus_enr="not ready"
+    while true; do
+        if [[ "${execution_enode}" == "not ready" ]]; then
+            execution_response="$(curl -fsS --max-time 2 \
+                -H 'content-type: application/json' \
+                --data '{"jsonrpc":"2.0","method":"admin_nodeInfo","params":[],"id":1}' \
+                http://127.0.0.1:8545 2>/dev/null)" || execution_response=""
+            execution_enode="$(jq -er '.result.enode' <<<"${execution_response}" 2>/dev/null)" \
+                || execution_enode="not ready"
+        fi
+        if [[ "${consensus_enr}" == "not ready" ]]; then
+            consensus_response="$(curl -fsS --max-time 2 \
+                http://127.0.0.1:3500/eth/v1/node/identity 2>/dev/null)" \
+                || consensus_response=""
+            consensus_enr="$(jq -er '.data.enr' <<<"${consensus_response}" 2>/dev/null)" \
+                || consensus_enr="not ready"
+        fi
+        if [[ "${execution_enode}" != "not ready" && "${consensus_enr}" != "not ready" ]]; then
+            break
+        fi
+        (( SECONDS < identity_deadline )) || break
+        if [[ "${waiting_message_shown}" == false ]]; then
+            printf '\nWaiting for Genesis node identity APIs.\n'
+            waiting_message_shown=true
+        fi
+        sleep 2
+    done
 
     printf '\nGenesis node information:\n'
     printf '  Public IP: %s\n' "${node_public_ip}"
     printf '  Execution enode: %s\n' "${execution_enode}"
     printf '  Consensus ENR: %s\n' "${consensus_enr}"
+    if [[ "${execution_enode}" == "not ready" || "${consensus_enr}" == "not ready" ]]; then
+        printf '  Identity APIs are not ready yet. Query them after the clients finish starting.\n'
+    fi
 }
 
 function show_docker_service() {
@@ -876,13 +926,10 @@ function show_docker_status() {
     show_docker_service Execution "${execution_name}"
     show_docker_service Consensus "${consensus_name}"
     show_docker_service Validator "${validator_name}"
-    show_execution_status
-    if [[ "${wait_for_api}" == true ]] && ! wait_for_consensus_api; then
-        printf '\nConsensus:\n'
-        printf '  Status: not ready after 30 seconds\n'
-        printf '  Check again with: ./ab-pos.sh %s --status\n' "${network}"
-        return 0
+    if [[ "${wait_for_api}" == true ]]; then
+        wait_for_node_apis || true
     fi
+    show_execution_status
     show_consensus_status || true
 }
 
@@ -991,13 +1038,10 @@ function show_binary_status() {
             printf '%-12s %-8s %s\n' "${service_label}" "${pid}" stopped
         fi
     done
-    show_execution_status
-    if [[ "${wait_for_api}" == true ]] && ! wait_for_consensus_api; then
-        printf '\nConsensus:\n'
-        printf '  Status: not ready after 30 seconds\n'
-        printf '  Check again with: ./ab-pos.sh %s --binary --status\n' "${network}"
-        return 0
+    if [[ "${wait_for_api}" == true ]]; then
+        wait_for_node_apis || true
     fi
+    show_execution_status
     show_consensus_status || true
 }
 
