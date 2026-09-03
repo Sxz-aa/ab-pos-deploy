@@ -30,24 +30,30 @@ On Ubuntu, the installer installs missing runtime packages through APT, includin
 
 Every deployment runs Geth and one beacon node. Validator and archive behavior are optional additions to the same node, so `--validator` and `--archive` may be used separately or together.
 
+Download the deployment script:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh
+```
+
 ### 3.1 RPC node
 
 Deploy Geth with Prysm:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth
+sudo bash ab-pos.sh testnet prysm geth
 ```
 
 Deploy Geth with Lighthouse:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet lighthouse geth
+sudo bash ab-pos.sh testnet lighthouse geth
 ```
 
 The default command reads its trusted checkpoint provider from `checkpoint_sync_urls.txt` in the selected network Release. To use an explicitly selected provider:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth \
+sudo bash ab-pos.sh testnet prysm geth \
   --checkpoint-url https://checkpoint.example.org
 ```
 
@@ -58,7 +64,7 @@ Verify the checkpoint provider through an independent trusted channel before usi
 A validator deployment creates a new mnemonic, password, keystores, and deposit data when its validator key directory is empty.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth \
+sudo bash ab-pos.sh testnet prysm geth \
   --validator \
   --validator-count 1000 \
   --withdrawal-address 0x0000000000000000000000000000000000000000 \
@@ -68,7 +74,7 @@ curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.
 Lighthouse uses the same options:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet lighthouse geth \
+sudo bash ab-pos.sh testnet lighthouse geth \
   --validator \
   --validator-count 1000 \
   --withdrawal-address 0x0000000000000000000000000000000000000000 \
@@ -95,7 +101,7 @@ Back up the mnemonic, password, keystores, and slashing protection data. Never r
 ### 3.3 Add archive storage
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet lighthouse geth --archive
+sudo bash ab-pos.sh testnet lighthouse geth --archive
 ```
 
 This starts Geth with full synchronization and archive state retention. It does not start a validator client unless `--validator` is also specified.
@@ -105,7 +111,7 @@ This starts Geth with full synchronization and archive state retention. It does 
 Add `--binary` to any node command to download and run native client binaries instead of containers:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --binary
+sudo bash ab-pos.sh testnet prysm geth --binary
 ```
 
 The selected Network Release supplies the patched AB Geth binary. Prysm and Lighthouse binaries are downloaded from their official GitHub Releases. When a non-genesis validator needs new keys, the EthStaker Deposit CLI binary is downloaded from its official GitHub Release. Client binaries are verified before installation under `/data/abpos/<network>/bin/`.
@@ -114,29 +120,29 @@ Binary processes run in detached sessions and write logs under `/data/abpos/<net
 
 ## 4. Node operations
 
-Use the same network and consensus client that were selected during installation.
+Run node operations with the local `ab-pos.sh` downloaded during deployment. The installed consensus client is detected automatically.
 
 For a binary deployment, include `--binary` in each operation command. Without it, operations target the default Docker deployment.
 
 Show node and synchronization status:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet --status
+sudo bash ab-pos.sh testnet --status
 ```
 
 Follow logs:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --logs geth
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --logs beacon
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --logs validator
+sudo bash ab-pos.sh testnet --logs geth
+sudo bash ab-pos.sh testnet --logs beacon
+sudo bash ab-pos.sh testnet --logs validator
 ```
 
 Stop or restart the node:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --stop
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --restart
+sudo bash ab-pos.sh testnet --stop
+sudo bash ab-pos.sh testnet --restart
 ```
 
 ## 5. Network ports
