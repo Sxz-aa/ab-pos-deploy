@@ -144,20 +144,9 @@ ABPOS_ROOT_PATH=/data/abpos/testnet-operator-a \
 
 Run `./generate-abpos-validators.sh --help` for the complete interface.
 
-### 4.5 Safe reruns
+### 4.5 Run the generator again
 
-The generator:
-
-- Creates a random keystore password and mnemonic when they do not exist.
-- Validates the withdrawal address and validator count.
-- Checks the number of keystores and deposit data files.
-- Normalizes the legacy nested `validator_keys/validator_keys` output layout.
-- Reuses a complete existing key set instead of generating over it.
-- Stops on an incomplete or inconsistent key set.
-- Runs the Deposit CLI container with the invoking user's UID and GID in Docker mode.
-- Verifies the official Deposit CLI archive checksum in binary mode.
-
-It does not build genesis files, send a transaction, upload private material, back up the mnemonic, or start node software.
+If the output directory already contains a complete key set, the generator reuses it. If the existing files are incomplete or inconsistent, it stops without overwriting them.
 
 ## 5. Deposit data handoff
 
