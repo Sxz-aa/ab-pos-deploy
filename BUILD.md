@@ -95,7 +95,7 @@ git tag -s v1.2.3-rc.1 -m "AB PoS testnet Genesis Candidate v1.2.3-rc.1"
 git push <github-remote> v1.2.3-rc.1
 ```
 
-The workflow publishes this tag as a GitHub Pre-release. Candidate validation permits missing or empty `bootstrap_nodes.txt` and `bootstrap_nodes_execution.txt`. Operators of long-lived Genesis Validator and RPC nodes install this exact tag, then return the execution enode and consensus ENR printed by `ab-pos.sh`.
+The workflow publishes this tag as a GitHub Pre-release. Candidate validation permits missing or empty `bootstrap_nodes.txt` and `bootstrap_nodes_execution.txt`. Genesis Validator Operators and Infrastructure Operators install this exact tag on their long-lived nodes, then return the execution enode and consensus ENR printed by `ab-pos.sh`.
 
 ### Build the Final Genesis Release
 

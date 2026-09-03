@@ -1,6 +1,6 @@
 # AB PoS Genesis Participation and Release Guide
 
-This guide covers the pre-genesis workflow for Genesis Validator and RPC Operators and the release workflow for Network Operators. It is intentionally separate from the public [post-genesis node deployment guide](../README.md).
+This guide covers the pre-genesis workflow for Genesis Validator Operators, Infrastructure Operators, and Network Operators. It is intentionally separate from the public [post-genesis node deployment guide](../README.md).
 
 The central security boundary is simple: each Validator Operator keeps all signing material, while the Network Operator receives only public deposit data and publishes only public network material.
 
@@ -19,7 +19,7 @@ The central security boundary is simple: each Validator Operator keeps all signi
 | Participant | Responsibility |
 | --- | --- |
 | Genesis Validator Operator | Generate and back up validator keys, send `deposit_data-*.json`, then start the Candidate Release and return the displayed public enode and ENR. |
-| Genesis RPC Operator | Start a long-lived public RPC node from the Candidate Release and return the displayed public enode and ENR. |
+| Infrastructure Operator | Start a long-lived public RPC node from the Candidate Release and return the displayed public enode and ENR. |
 | Network Operator | Build the Genesis Candidate, collect public node identities, publish the Final Genesis Release, and publish checkpoint URLs after finalization. |
 
 The Network Operator never needs another operator's mnemonic, password, keystores, signing keys, or slashing protection data.
@@ -37,14 +37,14 @@ Network Operator
   -> build genesis.json and genesis.ssz
   -> publish a Genesis Candidate Pre-release
 
-Genesis Validator and RPC Operators
+Genesis Validator and Infrastructure Operators
   -> run ab-pos.sh --genesis with the Candidate; Validator nodes add --validator
   -> send the displayed execution enode and consensus ENR
 
 Network Operator
   -> publish the Final Genesis Release with the collected bootnodes
 
-Genesis Validator and RPC Operators
+Genesis Validator and Infrastructure Operators
   -> run ab-pos.sh again with the Final Genesis Release
   -> confirm synchronization, finality, and Validator duties where applicable
 
@@ -183,7 +183,7 @@ The Network Operator workflow is:
 3. Place all accepted `deposit_data-*.json` files under `genesis/config/validator-deposits`.
 4. Run `generate-abpos-genesis.sh` and review `genesis/config/genesis-output`.
 5. Place the approved public Genesis files under `abpos/<network>/share` and publish a Candidate Pre-release.
-6. Ask operators of long-lived Genesis Validator and RPC nodes to start the Candidate and return their displayed Beacon ENRs and Geth enodes.
+6. Ask Genesis Validator Operators and Infrastructure Operators to start their long-lived Candidate nodes and return the displayed Beacon ENRs and Geth enodes.
 7. Populate both bootstrap node files and publish the Final Genesis Release.
 
 ### 6.1 Prepare a Genesis configuration
@@ -300,9 +300,9 @@ The URL must point to a compatible Beacon API checkpoint-sync service, not an ex
 ### 7.1 Release lifecycle
 
 1. A Candidate tag such as `v1.0.0-rc.1` publishes a GitHub Pre-release. Its bootstrap node files may be absent or empty.
-2. Operators of long-lived Genesis Validator and RPC nodes start that exact Candidate and return the displayed enode and ENR.
+2. Genesis Validator Operators and Infrastructure Operators start their long-lived nodes from that exact Candidate and return the displayed enode and ENR.
 3. The Network Operator adds the collected node identities and publishes the Final Genesis Release, such as `v1.0.0`.
-4. All Candidate node operators rerun the installer against the Final Release. Their chain data, validator data, JWT, and P2P identities are preserved.
+4. All participating operators rerun the installer against the Final Release. Their chain data, validator data, JWT, and P2P identities are preserved.
 5. After the network finalizes, a newer post-genesis Release includes trusted checkpoint provider URLs and becomes the default Release for ordinary nodes.
 
 The Candidate and Final Release must contain identical Genesis and client configuration files. Only the bootstrap node lists are completed between those two releases. The GitHub workflow verifies this before publishing the Final Genesis Release.
@@ -424,7 +424,7 @@ sudo ./ab-pos.sh testnet prysm geth \
 
 The installer reuses the imported validator wallet and saved fee recipient, and preserves both P2P identities.
 
-Genesis RPC Operators rerun the same command without `--validator`.
+Infrastructure Operators rerun the same command without `--validator`.
 
 ## 9. Security rules
 
