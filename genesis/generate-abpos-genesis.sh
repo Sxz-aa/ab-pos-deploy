@@ -89,8 +89,8 @@ readonly genesis_mode config_dir deposits_dir mnemonic_file output_dir
 readonly requested_validator_count="${EXPECTED_VALIDATOR_COUNT:-}"
 readonly requested_genesis_timestamp="${GENESIS_TIMESTAMP:-}"
 readonly generator_image="${GENESIS_GENERATOR_IMAGE:-ethpandaops/ethereum-genesis-generator:6.1.6}"
-readonly requested_target_total_supply_ab="${TARGET_TOTAL_SUPPLY_AB:-}"
-readonly requested_kab_multiplier="${KAB_MULTIPLIER:-}"
+readonly requested_target_total_supply="${TARGET_TOTAL_SUPPLY:-}"
+readonly requested_multiplier="${MULTIPLIER:-}"
 readonly requested_premine_address="${EL_PREMINE_ADDRESS:-}"
 readonly requested_base_fee_per_gas="${EL_BASE_FEE_PER_GAS:-}"
 readonly requested_config_name="${GENESIS_CONFIG_NAME:-}"
@@ -124,8 +124,8 @@ readonly genesis_timestamp="${configured_genesis_timestamp}"
 readonly deposit_network_name="${requested_deposit_network_name:-${DEPOSIT_NETWORK_NAME:-abcore}}"
 readonly min_validator_gwei="${requested_min_validator_gwei:-${MIN_VALIDATOR_GWEI:-32000000000}}"
 readonly max_validator_gwei="${requested_max_validator_gwei:-${MAX_VALIDATOR_GWEI:-2048000000000}}"
-readonly target_total_supply_ab="${requested_target_total_supply_ab:-${TARGET_TOTAL_SUPPLY_AB:-100000000000}}"
-readonly kab_multiplier="${requested_kab_multiplier:-${KAB_MULTIPLIER:-1000}}"
+readonly target_total_supply="${requested_target_total_supply:-${TARGET_TOTAL_SUPPLY:-}}"
+readonly multiplier="${requested_multiplier:-${MULTIPLIER:-}}"
 readonly premine_address="${requested_premine_address:-${EL_PREMINE_ADDRESS:-0x161f5Ef2C0c1Be307CFeF2E7b1411E352a3Be01B}}"
 readonly base_fee_per_gas="${requested_base_fee_per_gas:-${EL_BASE_FEE_PER_GAS:-0x2D79883D2000}}"
 readonly config_name="${requested_config_name:-${CONFIG_NAME:-testnet}}"
@@ -163,10 +163,10 @@ readonly genesis_mnemonic
 (( min_validator_gwei <= max_validator_gwei )) \
     || fail "MIN_VALIDATOR_GWEI must not exceed MAX_VALIDATOR_GWEI."
 
-[[ "${target_total_supply_ab}" =~ ^[1-9][0-9]*$ ]] \
-    || fail "TARGET_TOTAL_SUPPLY_AB must be a positive integer."
-[[ "${kab_multiplier}" =~ ^[1-9][0-9]*$ ]] \
-    || fail "KAB_MULTIPLIER must be a positive integer."
+[[ "${target_total_supply}" =~ ^[1-9][0-9]*$ ]] \
+    || fail "TARGET_TOTAL_SUPPLY must be a positive integer."
+[[ "${multiplier}" =~ ^[1-9][0-9]*$ ]] \
+    || fail "MULTIPLIER must be a positive integer."
 [[ "${premine_address}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
     || fail "EL_PREMINE_ADDRESS is invalid: ${premine_address}"
 [[ "${base_fee_per_gas}" =~ ^0x[0-9a-fA-F]+$ ]] \
@@ -323,10 +323,10 @@ fi
     || fail "Total validator stake must be a whole number of ETH."
 
 total_staked_eth=$((total_staked_gwei / 1000000000))
-total_staked_ab=$((total_staked_eth * kab_multiplier))
-premine_ab=$((target_total_supply_ab - total_staked_ab))
-(( premine_ab > 0 )) || fail "Calculated execution-layer premine is not positive."
-premine_wei="${premine_ab}000000000000000000"
+total_staked_supply=$((total_staked_eth * multiplier))
+premine_supply=$((target_total_supply - total_staked_supply))
+(( premine_supply > 0 )) || fail "Calculated execution-layer premine is not positive."
+premine_wei="${premine_supply}000000000000000000"
 
 cat >> "${runtime_values}" <<RUNTIME_VALUES
 
@@ -335,7 +335,7 @@ export NUMBER_OF_VALIDATORS="${expected_validator_count}"
 export GENESIS_TIMESTAMP="${genesis_timestamp}"
 export CONFIG_NAME="${config_name}"
 export EL_PREMINE_COUNT="0"
-export EL_PREMINE_AMOUNT="${premine_ab}"
+export EL_PREMINE_AMOUNT="${premine_supply}"
 RUNTIME_VALUES
 
 if [[ "${genesis_mode}" == "deposit-data" ]]; then
@@ -470,5 +470,5 @@ printf 'Generated AB PoS genesis files in %s\n' "${output_dir}"
 printf 'Validator source: %s\n' "${genesis_mode}"
 printf 'Validators: %s\n' "${generated_count}"
 printf 'Total stake (Gwei): %s\n' "${total_staked_gwei}"
-printf 'Execution premine (AB): %s\n' "${premine_ab}"
+printf 'Execution premine: %s\n' "${premine_supply}"
 printf 'Genesis validators root: %s\n' "${genesis_validators_root}"
