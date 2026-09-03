@@ -317,24 +317,24 @@ Use the same deployment mode used for installation.
 Docker status and logs:
 
 ```bash
-sudo ./ab-pos.sh testnet prysm geth --status
-sudo ./ab-pos.sh testnet prysm geth --logs geth
-sudo ./ab-pos.sh testnet prysm geth --logs beacon
-sudo ./ab-pos.sh testnet prysm geth --logs validator
+sudo ./ab-pos.sh testnet --status
+sudo ./ab-pos.sh testnet --logs geth
+sudo ./ab-pos.sh testnet --logs beacon
+sudo ./ab-pos.sh testnet --logs validator
 ```
 
 Binary status and logs:
 
 ```bash
-sudo ./ab-pos.sh testnet prysm geth --binary --status
-sudo ./ab-pos.sh testnet prysm geth --binary --logs geth
+sudo ./ab-pos.sh testnet --binary --status
+sudo ./ab-pos.sh testnet --binary --logs geth
 ```
 
 Stop or restart:
 
 ```bash
-sudo ./ab-pos.sh testnet prysm geth --stop
-sudo ./ab-pos.sh testnet prysm geth --restart
+sudo ./ab-pos.sh testnet --stop
+sudo ./ab-pos.sh testnet --restart
 ```
 
 For binary deployments, include `--binary` in both commands.

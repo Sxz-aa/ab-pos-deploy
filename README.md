@@ -121,7 +121,7 @@ For a binary deployment, include `--binary` in each operation command. Without i
 Show node and synchronization status:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet prysm geth --status
+curl -fsSL https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh | sudo bash -s -- testnet --status
 ```
 
 Follow logs:

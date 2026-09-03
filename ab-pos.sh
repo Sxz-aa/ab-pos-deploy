@@ -33,16 +33,19 @@ function usage() {
 AB PoS node installer.
 
 Usage:
-  ab-pos.sh <network> <consensus-client> geth [options]
-  ab-pos.sh <network> <consensus-client> geth --status
-  ab-pos.sh <network> <consensus-client> geth --logs [service]
-  ab-pos.sh <network> <consensus-client> geth --stop
-  ab-pos.sh <network> <consensus-client> geth --restart
+  ab-pos.sh <network> [consensus-client] [geth] [options]
+  ab-pos.sh <network> --status
+  ab-pos.sh <network> --logs [service]
+  ab-pos.sh <network> --stop
+  ab-pos.sh <network> --restart
 
 Arguments:
   network             testnet or mainnet
-  consensus-client    prysm or lighthouse
-  execution-client    geth
+  consensus-client    prysm or lighthouse; detected for an installed node
+  execution-client    geth; optional because Geth is currently the only choice
+
+On a first installation, omitting the consensus client opens an interactive
+Prysm/Lighthouse selection. Non-interactive installations must specify it.
 
 Node modes:
   Default              RPC node, synchronized from checkpoint
@@ -85,6 +88,8 @@ Operations:
 
 Examples:
   ./ab-pos.sh testnet prysm geth
+
+  ./ab-pos.sh testnet --status
 
   ./ab-pos.sh testnet prysm geth \
     --genesis --validator \
@@ -217,15 +222,32 @@ if [[ "${1:-}" == "--version" ]]; then
     exit 0
 fi
 
-[[ "$#" -ge 3 ]] || {
+[[ "$#" -ge 1 ]] || {
     usage >&2
     exit 1
 }
 
 network="${1,,}"
-consensus_client="${2,,}"
-execution_client="${3,,}"
-shift 3
+shift
+
+if [[ -n "${1:-}" && "${1:-}" != --* ]]; then
+    case "${1,,}" in
+        prysm | lighthouse)
+            consensus_client="${1,,}"
+            shift
+            ;;
+        geth)
+            execution_client="geth"
+            shift
+            ;;
+        *) fail "Unsupported consensus client: $1" ;;
+    esac
+fi
+
+if [[ -n "${1:-}" && "${1:-}" != --* ]]; then
+    execution_client="${1,,}"
+    shift
+fi
 
 case "${network}" in
     test | testnet) network="testnet" ;;
@@ -233,11 +255,7 @@ case "${network}" in
     *) fail "Unsupported network: ${network}" ;;
 esac
 
-case "${consensus_client}" in
-    prysm | lighthouse) ;;
-    *) fail "Unsupported consensus client: ${consensus_client}" ;;
-esac
-
+execution_client="${execution_client:-geth}"
 [[ "${execution_client}" == "geth" ]] || fail "Unsupported execution client: ${execution_client}"
 
 while [[ "$#" -gt 0 ]]; do
@@ -289,6 +307,143 @@ done
 [[ "${release_repo}" =~ ^[^/]+/[^/]+$ ]] || fail "Release repository must use OWNER/REPO format."
 
 data_dir="${data_dir:-${root_dir}/${network}}"
+
+function detect_docker_consensus_client() {
+    command -v docker >/dev/null 2>&1 || return 1
+
+    local container_id
+    local container_name
+    local label_client
+    local label_network
+    local label_role
+    local description
+    local mounts
+    local relevant
+    local -A detected=()
+
+    while IFS= read -r container_id; do
+        [[ -n "${container_id}" ]] || continue
+        container_name="$(docker container inspect "${container_id}" --format '{{.Name}}' 2>/dev/null)" || continue
+        container_name="${container_name#/}"
+        label_network="$(docker container inspect "${container_id}" \
+            --format '{{index .Config.Labels "io.abpos.network"}}' 2>/dev/null || true)"
+        label_role="$(docker container inspect "${container_id}" \
+            --format '{{index .Config.Labels "io.abpos.role"}}' 2>/dev/null || true)"
+        label_client="$(docker container inspect "${container_id}" \
+            --format '{{index .Config.Labels "io.abpos.consensus-client"}}' 2>/dev/null || true)"
+        mounts="$(docker container inspect "${container_id}" \
+            --format '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null || true)"
+
+        relevant=false
+        if [[ "${label_network}:${label_role}" == "${network}:consensus" ]]; then
+            relevant=true
+        fi
+        case "${container_name}" in
+            "abpos-${network}-consensus" | "abpos-${network}-prysm" | "abpos-${network}-lighthouse")
+                relevant=true
+                ;;
+        esac
+        if grep -Fxq -- "${data_dir}/prysm" <<<"${mounts}" \
+            || grep -Fxq -- "${data_dir}/lighthouse" <<<"${mounts}"; then
+            relevant=true
+        fi
+        [[ "${relevant}" == true ]] || continue
+
+        case "${label_client}" in
+            prysm | lighthouse)
+                detected["${label_client}"]=1
+                continue
+                ;;
+        esac
+
+        description="$(docker container inspect "${container_id}" \
+            --format '{{.Config.Image}} {{.Path}} {{range .Args}}{{.}} {{end}}' 2>/dev/null || true)"
+        if [[ "${description,,}" == *prysm* ]] \
+            || grep -Fxq -- "${data_dir}/prysm" <<<"${mounts}"; then
+            detected[prysm]=1
+        fi
+        if [[ "${description,,}" == *lighthouse* ]] \
+            || grep -Fxq -- "${data_dir}/lighthouse" <<<"${mounts}"; then
+            detected[lighthouse]=1
+        fi
+    done < <(docker container ls -aq 2>/dev/null)
+
+    if (( ${#detected[@]} == 1 )); then
+        printf '%s\n' "${!detected[@]}"
+        return 0
+    fi
+    (( ${#detected[@]} == 0 )) && return 1
+    return 2
+}
+
+function detect_binary_consensus_client() {
+    local launcher="${data_dir}/run/beacon.sh"
+    local -A detected=()
+
+    if [[ -f "${launcher}" ]]; then
+        grep -qi prysm "${launcher}" && detected[prysm]=1
+        grep -qi lighthouse "${launcher}" && detected[lighthouse]=1
+    fi
+    if (( ${#detected[@]} == 0 )); then
+        [[ -d "${data_dir}/prysm" ]] && detected[prysm]=1
+        [[ -d "${data_dir}/lighthouse" ]] && detected[lighthouse]=1
+    fi
+    if (( ${#detected[@]} == 1 )); then
+        printf '%s\n' "${!detected[@]}"
+        return 0
+    fi
+    (( ${#detected[@]} == 0 )) && return 1
+    return 2
+}
+
+function detect_installed_consensus_client() {
+    if [[ "${deployment_mode}" == "binary" ]]; then
+        detect_binary_consensus_client
+    else
+        detect_docker_consensus_client
+    fi
+}
+
+function select_consensus_client() {
+    local selection
+
+    [[ -t 1 && -r /dev/tty && -w /dev/tty ]] \
+        || fail "Consensus client is required for a non-interactive installation. Specify prysm or lighthouse."
+    printf '\nSelect a consensus client:\n  1) Prysm\n  2) Lighthouse\nSelection [1]: ' >/dev/tty
+    IFS= read -r selection </dev/tty \
+        || fail "Unable to read the consensus client selection."
+    case "${selection,,}" in
+        "" | 1 | prysm) printf '%s\n' prysm ;;
+        2 | lighthouse) printf '%s\n' lighthouse ;;
+        *) fail "Invalid consensus client selection: ${selection}" ;;
+    esac
+}
+
+if [[ -z "${consensus_client}" ]]; then
+    detected_consensus_client=""
+    detection_status=0
+    detected_consensus_client="$(detect_installed_consensus_client)" || detection_status=$?
+    case "${detection_status}" in
+        0)
+            consensus_client="${detected_consensus_client}"
+            color "34" "Detected installed consensus client: ${consensus_client}"
+            ;;
+        1)
+            if [[ "${operation}" == "install" ]]; then
+                consensus_client="$(select_consensus_client)"
+            else
+                fail "Unable to detect the installed consensus client. Specify prysm or lighthouse."
+            fi
+            ;;
+        *) fail "Multiple installed consensus clients were detected. Specify prysm or lighthouse." ;;
+    esac
+fi
+
+case "${consensus_client}" in
+    prysm | lighthouse) ;;
+    *) fail "Unsupported consensus client: ${consensus_client}" ;;
+esac
+
 if [[ -z "${keys_dir}" ]]; then
     if [[ "${validator_mode}" == true && "${genesis_mode}" == false ]]; then
         keys_dir="${data_dir}/validator-keys"
@@ -652,8 +807,7 @@ function show_docker_status() {
     if [[ "${wait_for_api}" == true ]] && ! wait_for_consensus_api; then
         printf '\nConsensus:\n'
         printf '  Status: not ready after 30 seconds\n'
-        printf '  Check again with: ./ab-pos.sh %s %s geth --status\n' \
-            "${network}" "${consensus_client}"
+        printf '  Check again with: ./ab-pos.sh %s --status\n' "${network}"
         return 0
     fi
     show_consensus_status || true
@@ -768,8 +922,7 @@ function show_binary_status() {
     if [[ "${wait_for_api}" == true ]] && ! wait_for_consensus_api; then
         printf '\nConsensus:\n'
         printf '  Status: not ready after 30 seconds\n'
-        printf '  Check again with: ./ab-pos.sh %s %s geth --binary --status\n' \
-            "${network}" "${consensus_client}"
+        printf '  Check again with: ./ab-pos.sh %s --binary --status\n' "${network}"
         return 0
     fi
     show_consensus_status || true
