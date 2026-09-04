@@ -65,13 +65,12 @@ Verify the checkpoint provider through an independent trusted channel before usi
 ### 3.2 Add validator duties
 
 A validator deployment creates a new mnemonic, password, keystores, and deposit data when its validator key directory is empty.
-The value passed to `--amount` is a positive whole-token amount.
 
 ```bash
 sudo bash ab-pos.sh testnet prysm geth \
   --validator \
   --validator-count 1000 \
-  --amount 32000 \
+  --amount 2048000 \
   --withdrawal-address 0x0000000000000000000000000000000000000000 \
   --fee-recipient 0x0000000000000000000000000000000000000000
 ```
@@ -82,7 +81,7 @@ Lighthouse uses the same options:
 sudo bash ab-pos.sh testnet lighthouse geth \
   --validator \
   --validator-count 1000 \
-  --amount 32000 \
+  --amount 2048000 \
   --withdrawal-address 0x0000000000000000000000000000000000000000 \
   --fee-recipient 0x0000000000000000000000000000000000000000
 ```

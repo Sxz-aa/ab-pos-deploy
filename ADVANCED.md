@@ -320,7 +320,24 @@ sudo ./ab-pos.sh testnet prysm geth \
 
 Never run the same validator pubkey from two validator clients. Preserve the validator client data directory when upgrading because it contains slashing protection state.
 
-### 6.1 Genesis node public IP
+### 6.1 Validator key-generation options
+
+The following options control post-genesis Validator key generation:
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--validator-count` | `1000` | Number of keys generated when the Validator key directory is empty. It does not add keys to an existing key set. |
+| `--amount` | None | Required when generating keys. It is the positive whole-token Deposit amount for each Validator and must satisfy the selected Network Release. |
+| `--withdrawal-address` | None | Required for a post-genesis Validator deployment. New keys use it for their withdrawal credentials. |
+| `--fee-recipient` | Saved value | Required on the first Validator installation. The installer saves it in the network data directory and reuses it on subsequent runs. |
+
+For the current AB Core configuration, `--amount 32000` is the minimum
+activation amount and `--amount 2048000` creates a 2,048,000 AB Deposit record
+for each Validator. The installer reads the conversion from the selected
+Network Release and verifies the generated Deposit Data. It does not assign a
+default amount.
+
+### 6.2 Genesis node public IP
 
 For every `--genesis` deployment, the installer detects the server's public IPv4 address through the same OpenDNS lookup used by the AB deployment tooling. It configures that address for both the execution and consensus clients and prints the resulting execution enode and consensus ENR when installation finishes.
 
