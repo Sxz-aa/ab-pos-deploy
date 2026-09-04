@@ -211,23 +211,15 @@ readonly genesis_mnemonic
     || fail "CAPELLA_FORK_VERSION is invalid in ${config_dir}/values.env."
 [[ "${DEPOSIT_CONTRACT_ADDRESS:-}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
     || fail "DEPOSIT_CONTRACT_ADDRESS is invalid in ${config_dir}/values.env."
-[[ "${VALIDATOR_BALANCE_GWEI:-}" =~ ^[1-9][0-9]*$ ]] \
-    || fail "VALIDATOR_BALANCE_GWEI must be a positive integer in ${config_dir}/values.env."
-deposit_amount="$(jq -nr \
-    --argjson amount_gwei "${VALIDATOR_BALANCE_GWEI}" \
-    --argjson multiplier "${deposit_cli_multiplier}" \
-    '$amount_gwei / 1000000000 / $multiplier')"
 min_activation_amount="$(jq -nr \
     --argjson amount_gwei "${min_validator_gwei}" \
     --argjson multiplier "${deposit_cli_multiplier}" \
     '$amount_gwei / 1000000000 / $multiplier')"
-readonly deposit_amount min_activation_amount
+readonly min_activation_amount
 jq -en \
-    --argjson deposit_amount "${deposit_amount}" \
     --argjson min_activation_amount "${min_activation_amount}" \
     --argjson min_deposit_amount "${min_deposit_amount}" \
-    '$deposit_amount >= $min_activation_amount
-        and $min_activation_amount >= $min_deposit_amount
+    '$min_activation_amount >= $min_deposit_amount
         and $min_deposit_amount > 0' >/dev/null \
     || fail "Deposit amount settings are inconsistent."
 
@@ -237,8 +229,6 @@ function write_deposit_settings() {
 
     jq -n \
         --arg chain "${chain_name}" \
-        --arg network "${network_name}" \
-        --argjson deposit_amount "${deposit_amount}" \
         --arg genesis_fork_version "${GENESIS_FORK_VERSION}" \
         --arg exit_fork_version "${CAPELLA_FORK_VERSION}" \
         --arg genesis_validator_root "${validators_root}" \
@@ -246,18 +236,13 @@ function write_deposit_settings() {
         --argjson min_activation_amount "${min_activation_amount}" \
         --argjson min_deposit_amount "${min_deposit_amount}" \
         '{
-            chain: $chain,
-            network: $network,
-            deposit_amount: $deposit_amount,
-            devnet_chain_setting: {
-                network_name: $chain,
-                genesis_fork_version: $genesis_fork_version,
-                exit_fork_version: $exit_fork_version,
-                genesis_validator_root: $genesis_validator_root,
-                multiplier: $multiplier,
-                min_activation_amount: $min_activation_amount,
-                min_deposit_amount: $min_deposit_amount
-            }
+            network_name: $chain,
+            genesis_fork_version: $genesis_fork_version,
+            exit_fork_version: $exit_fork_version,
+            genesis_validator_root: $genesis_validator_root,
+            multiplier: $multiplier,
+            min_activation_amount: $min_activation_amount,
+            min_deposit_amount: $min_deposit_amount
         }' > "${destination}"
 }
 
@@ -273,17 +258,12 @@ if [[ "${genesis_mode}" == "deposit-data" ]]; then
         || fail "Genesis participation settings are missing. Run --prepare-deposit-settings first."
     jq -e \
         --arg chain "${chain_name}" \
-        --arg network "${network_name}" \
-        --argjson deposit_amount "${deposit_amount}" \
         --arg genesis_fork_version "${GENESIS_FORK_VERSION}" \
         --arg exit_fork_version "${CAPELLA_FORK_VERSION}" \
         --argjson multiplier "${deposit_cli_multiplier}" \
         --argjson min_activation_amount "${min_activation_amount}" \
         --argjson min_deposit_amount "${min_deposit_amount}" '
-            .chain == $chain
-            and .network == $network
-            and .deposit_amount == $deposit_amount
-            and .devnet_chain_setting == {
+            . == {
                 network_name: $chain,
                 genesis_fork_version: $genesis_fork_version,
                 exit_fork_version: $exit_fork_version,
@@ -296,6 +276,11 @@ if [[ "${genesis_mode}" == "deposit-data" ]]; then
         || fail "values.env no longer matches the published Genesis participation settings."
 fi
 if [[ "${genesis_mode}" == "mnemonic" ]]; then
+    [[ "${VALIDATOR_BALANCE_GWEI:-}" =~ ^[1-9][0-9]*$ ]] \
+        || fail "VALIDATOR_BALANCE_GWEI must be a positive integer in ${config_dir}/values.env."
+    (( VALIDATOR_BALANCE_GWEI >= min_validator_gwei \
+        && VALIDATOR_BALANCE_GWEI <= max_validator_gwei )) \
+        || fail "VALIDATOR_BALANCE_GWEI is outside the accepted validator range."
     [[ "${WITHDRAWAL_ADDRESS:-}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
         || fail "WITHDRAWAL_ADDRESS is invalid in ${config_dir}/values.env."
     [[ "${WITHDRAWAL_TYPE:-}" =~ ^0x[0-9a-fA-F]{2}$ ]] \
@@ -346,14 +331,6 @@ else
 fi
 
 readonly genesis_fork_version="${GENESIS_FORK_VERSION}"
-readonly expected_deposit_gwei="$(jq -nr \
-    --argjson amount "${deposit_amount}" \
-    --argjson multiplier "${deposit_cli_multiplier}" \
-    '$amount * $multiplier * 1000000000')"
-[[ "${expected_deposit_gwei}" =~ ^[1-9][0-9]*$ ]] \
-    || fail "Deposit settings do not produce a whole positive Gwei amount."
-[[ "${expected_deposit_gwei}" == "${VALIDATOR_BALANCE_GWEI}" ]] \
-    || fail "Deposit settings do not match VALIDATOR_BALANCE_GWEI."
 
 printf 'Genesis validator source: %s\n' "${genesis_mode}"
 
@@ -398,8 +375,6 @@ function prepare_genesis_deposits() {
                 || fail "Invalid deposit amount in ${deposit_file} for ${pubkey}: ${amount}"
             (( amount >= min_validator_gwei && amount <= max_validator_gwei )) \
                 || fail "Deposit amount is outside the accepted range for ${pubkey}: ${amount}"
-            [[ "${amount}" == "${expected_deposit_gwei}" ]] \
-                || fail "Deposit amount mismatch for ${pubkey}: expected ${expected_deposit_gwei}, got ${amount}"
             [[ "${fork_version,,}" == "${expected_fork_clean,,}" ]] \
                 || fail "Fork version mismatch for ${pubkey}: expected ${genesis_fork_version}, got ${fork_version}"
             [[ "${network_name}" == "${expected_deposit_network_name}" ]] \

@@ -57,29 +57,32 @@ jobs:
           zero_root="0x0000000000000000000000000000000000000000000000000000000000000000"
           for settings_path in */*/share/deposit-settings.json; do
             [[ -f "${settings_path}" ]] || continue
-            settings_root="$(jq -r '.devnet_chain_setting.genesis_validator_root // empty' "${settings_path}")"
+            settings_root="$(jq -r '.genesis_validator_root // empty' "${settings_path}")"
             [[ "${settings_root}" == "${zero_root}" ]] || continue
             found_settings=true
             chain="$(basename "$(dirname "$(dirname "$(dirname "${settings_path}")")")")"
             network="$(basename "$(dirname "$(dirname "${settings_path}")")")"
             jq -e \
               --arg chain "${chain}" \
-              --arg network "${network}" \
               --arg zero_root "${zero_root}" '
                 type == "object"
-                and .chain == $chain
-                and .network == $network
-                and (.deposit_amount | type == "number" and . > 0)
-                and (.devnet_chain_setting | type == "object")
-                and .devnet_chain_setting.network_name == $chain
-                and (.devnet_chain_setting.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
-                and (.devnet_chain_setting.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
-                and .devnet_chain_setting.genesis_validator_root == $zero_root
-                and (.devnet_chain_setting.multiplier | type == "number" and . > 0)
-                and (.devnet_chain_setting.min_activation_amount | type == "number" and . > 0)
-                and (.devnet_chain_setting.min_deposit_amount | type == "number" and . > 0)
-                and .deposit_amount >= .devnet_chain_setting.min_activation_amount
-                and .devnet_chain_setting.min_activation_amount >= .devnet_chain_setting.min_deposit_amount
+                and (keys | sort) == ([
+                  "network_name",
+                  "genesis_fork_version",
+                  "exit_fork_version",
+                  "genesis_validator_root",
+                  "multiplier",
+                  "min_activation_amount",
+                  "min_deposit_amount"
+                ] | sort)
+                and .network_name == $chain
+                and (.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+                and (.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+                and .genesis_validator_root == $zero_root
+                and (.multiplier | type == "number" and . > 0)
+                and (.min_activation_amount | type == "number" and . > 0)
+                and (.min_deposit_amount | type == "number" and . > 0)
+                and .min_activation_amount >= .min_deposit_amount
               ' "${settings_path}" >/dev/null
             archive="build/${chain}-${network}-${GITHUB_REF_NAME}.tar.gz"
             tar -C "$(dirname "${settings_path}")" -czf "${archive}" deposit-settings.json

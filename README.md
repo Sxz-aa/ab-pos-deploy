@@ -70,6 +70,7 @@ A validator deployment creates a new mnemonic, password, keystores, and deposit 
 sudo bash ab-pos.sh testnet prysm geth \
   --validator \
   --validator-count 1000 \
+  --amount 32 \
   --withdrawal-address 0x0000000000000000000000000000000000000000 \
   --fee-recipient 0x0000000000000000000000000000000000000000
 ```
@@ -80,6 +81,7 @@ Lighthouse uses the same options:
 sudo bash ab-pos.sh testnet lighthouse geth \
   --validator \
   --validator-count 1000 \
+  --amount 32 \
   --withdrawal-address 0x0000000000000000000000000000000000000000 \
   --fee-recipient 0x0000000000000000000000000000000000000000
 ```

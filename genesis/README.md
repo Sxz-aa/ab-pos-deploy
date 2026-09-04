@@ -74,14 +74,25 @@ This creates `genesis/config/deposit-settings.json`. The initial file contains a
 `genesis_validator_root` because the Genesis state does not exist yet; that
 field does not participate in Deposit Data signing.
 
+```json
+{
+  "network_name": "abcore",
+  "genesis_fork_version": "0x000001ab",
+  "exit_fork_version": "0x030001ab",
+  "genesis_validator_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "multiplier": 1,
+  "min_activation_amount": 32,
+  "min_deposit_amount": 1
+}
+```
+
 The settings are derived from the reviewed `values.env`:
 
 | Setting | Source |
 | --- | --- |
-| Chain and network | `CHAIN_NAME` and `NETWORK_NAME` |
+| Deposit CLI network name | `CHAIN_NAME` |
 | Deposit fork version | `GENESIS_FORK_VERSION` |
 | Exit fork version | `CAPELLA_FORK_VERSION` |
-| Deposit amount | `VALIDATOR_BALANCE_GWEI` and `DEPOSIT_CLI_MULTIPLIER` |
 | Minimum activation amount | `MIN_VALIDATOR_GWEI` and `DEPOSIT_CLI_MULTIPLIER` |
 | Minimum Deposit CLI amount | `MIN_DEPOSIT_AMOUNT` |
 
@@ -124,11 +135,15 @@ curl -fsSL \
   "https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/${participation_tag}/genesis/generate-abpos-validators.sh" |
 sudo bash -s -- \
   --release "${participation_tag}" \
+  --amount 32 \
   testnet \
   0x0000000000000000000000000000000000000000
 ```
 
 Replace the example withdrawal address before running the command.
+The Validator Operator selects the amount deposited for each generated
+validator. `--amount 32` is the minimum activation amount in this example;
+use another amount permitted by the Network Operator when appropriate.
 
 To use the official EthStaker Deposit CLI binary instead of Docker:
 
@@ -139,6 +154,7 @@ curl -fsSL \
 sudo bash -s -- \
   --binary \
   --release "${participation_tag}" \
+  --amount 32 \
   testnet \
   0x0000000000000000000000000000000000000000
 ```
@@ -148,7 +164,8 @@ The binary archive and its checksum are downloaded from the selected EthStaker D
 The generator uses:
 
 - 1000 validators
-- the Deposit amount and network parameters from `deposit-settings.json`
+- the per-validator Deposit amount selected with `--amount`
+- the public chain parameters from `deposit-settings.json`
 - `0x02` compounding withdrawal credentials
 - `/data/abcore/<network>` as the output root
 
@@ -179,6 +196,7 @@ VALIDATOR_COUNT=10 \
 ABPOS_ROOT_PATH=/data/abcore/testnet-operator-a \
 ./generate-abpos-validators.sh \
   --deposit-settings ./deposit-settings.json \
+  --amount 32 \
   testnet \
   0x0000000000000000000000000000000000000000
 ```
@@ -187,6 +205,7 @@ ABPOS_ROOT_PATH=/data/abcore/testnet-operator-a \
 | --- | --- | --- |
 | `WITHDRAWAL_ADDRESS` | None | Used when the positional address is omitted |
 | `VALIDATOR_COUNT` | `1000` | Number of validators to generate |
+| `VALIDATOR_DEPOSIT_AMOUNT` | None | Alternative to `--amount` |
 | `ABPOS_CHAIN_NAME` | `abcore` | Chain name used when it is omitted from the command |
 | `ABPOS_ROOT_PATH` | `/data/<chain>/<network>` | Network output directory |
 | `DEPOSIT_SETTINGS_FILE` | None | Alternative to `--deposit-settings` |
@@ -212,6 +231,10 @@ sha256sum /data/abcore/testnet/keys/validator_keys/deposit_data-*.json
 ```
 
 The Network Operator should record the submitting operator, expected validator count, file checksum, withdrawal address, and accepted network parameters without taking custody of any private key material.
+The Genesis builder validates every submitted amount against
+`MIN_VALIDATOR_GWEI` and `MAX_VALIDATOR_GWEI` and calculates total stake from
+the accepted Deposit Data; different operators do not need to select the same
+amount.
 
 ## 6. Build the Genesis Candidate
 

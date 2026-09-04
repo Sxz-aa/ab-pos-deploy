@@ -22,6 +22,7 @@ settings_release=""
 settings_release_repo="${default_release_repo}"
 settings_release_url=""
 settings_download_dir=""
+deposit_amount="${VALIDATOR_DEPOSIT_AMOUNT:-}"
 
 function color() {
     # Usage: color "31;5" "message"
@@ -39,8 +40,8 @@ function usage() {
 Generate AB PoS genesis validator keys and deposit data.
 
 Usage:
-  generate-abpos-validators.sh --release VERSION [OPTIONS] [chain] <network> <withdrawal-address>
-  generate-abpos-validators.sh --deposit-settings FILE [OPTIONS] [chain] <network> <withdrawal-address>
+  generate-abpos-validators.sh --release VERSION --amount AMOUNT [OPTIONS] [chain] <network> <withdrawal-address>
+  generate-abpos-validators.sh --deposit-settings FILE --amount AMOUNT [OPTIONS] [chain] <network> <withdrawal-address>
 
 Arguments:
   chain
@@ -68,6 +69,10 @@ Options:
   --deposit-settings FILE
       Use a local public settings file instead of a Release.
 
+  --amount AMOUNT
+      Deposit amount for each generated validator. This is selected by the
+      Validator Operator and must satisfy the published Deposit CLI settings.
+
   --docker
       Generate keys with the Deposit CLI container. This is the default.
 
@@ -88,6 +93,9 @@ Environment variables:
   VALIDATOR_COUNT
       Number of validators to generate.
       Default: 1000
+
+  VALIDATOR_DEPOSIT_AMOUNT
+      Alternative to --amount.
 
   ABPOS_ROOT_PATH
       Network output directory.
@@ -116,11 +124,13 @@ Outputs:
 Examples:
   ./generate-abpos-validators.sh \
     --release v1.0.0-rc.0 \
+    --amount 32 \
     testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   ./generate-abpos-validators.sh --binary \
     --release v1.0.0-rc.0 \
+    --amount 32 \
     testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
@@ -128,16 +138,19 @@ Examples:
     ABPOS_ROOT_PATH=/data/abcore/testnet-operator-a \
     ./generate-abpos-validators.sh \
     --deposit-settings ./deposit-settings.json \
+    --amount 32 \
     testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   WITHDRAWAL_ADDRESS=0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332 \
     ./generate-abpos-validators.sh \
     --deposit-settings ./deposit-settings.json \
+    --amount 32 \
     testnet
 
   ./generate-abpos-validators.sh \
     --deposit-settings ./deposit-settings.json \
+    --amount 32 \
     abapp1 testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
@@ -362,6 +375,11 @@ while [[ "$#" -gt 0 ]]; do
             settings_release_url="$2"
             shift
             ;;
+        --amount)
+            [[ "$#" -ge 2 ]] || fail "--amount requires a value."
+            deposit_amount="$2"
+            shift
+            ;;
         -h | --help)
             usage
             exit 0
@@ -426,6 +444,8 @@ settings_source_count=0
 [[ -z "${settings_release_url}" ]] || settings_source_count=$((settings_source_count + 1))
 [[ "${settings_source_count}" -eq 1 ]] \
     || fail "Specify exactly one of --release, --release-url, or --deposit-settings."
+[[ -n "${deposit_amount}" ]] \
+    || fail "--amount is required. Choose the per-validator Deposit amount."
 require_command jq
 if [[ -z "${deposit_settings_file}" ]]; then
     require_command curl
@@ -438,26 +458,48 @@ fi
 require_command jq
 jq -e \
     --arg chain "${chain_name}" \
-    --arg network "${network}" '
+    '
         type == "object"
-        and .chain == $chain
-        and .network == $network
-        and (.deposit_amount | type == "number" and . > 0)
-        and (.devnet_chain_setting | type == "object")
-        and .devnet_chain_setting.network_name == $chain
-        and (.devnet_chain_setting.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
-        and (.devnet_chain_setting.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
-        and (.devnet_chain_setting.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
-        and (.devnet_chain_setting.multiplier | type == "number" and . > 0)
-        and (.devnet_chain_setting.min_activation_amount | type == "number" and . > 0)
-        and (.devnet_chain_setting.min_deposit_amount | type == "number" and . > 0)
-        and .deposit_amount >= .devnet_chain_setting.min_activation_amount
-        and .devnet_chain_setting.min_activation_amount >= .devnet_chain_setting.min_deposit_amount
+        and (keys | sort) == ([
+            "network_name",
+            "genesis_fork_version",
+            "exit_fork_version",
+            "genesis_validator_root",
+            "multiplier",
+            "min_activation_amount",
+            "min_deposit_amount"
+        ] | sort)
+        and .network_name == $chain
+        and (.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+        and (.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+        and (.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
+        and (.multiplier | type == "number" and . > 0)
+        and (.min_activation_amount | type == "number" and . > 0)
+        and (.min_deposit_amount | type == "number" and . > 0)
+        and .min_activation_amount >= .min_deposit_amount
     ' "${deposit_settings_file}" >/dev/null \
     || fail "Invalid deposit settings for ${chain_name}/${network}: ${deposit_settings_file}"
 readonly deposit_settings_file
-readonly deposit_amount="$(jq -r '.deposit_amount | tostring' "${deposit_settings_file}")"
-readonly devnet_chain_setting="$(jq -c '.devnet_chain_setting' "${deposit_settings_file}")"
+deposit_amount="$(jq -nr --argjson value "${deposit_amount}" \
+    '$value | select(type == "number" and . > 0) | tostring')" \
+    || fail "--amount must be a positive number."
+[[ -n "${deposit_amount}" ]] || fail "--amount must be a positive number."
+readonly deposit_amount
+readonly chain_setting="$(jq -c '.' "${deposit_settings_file}")"
+readonly expected_deposit_gwei="$(jq -nr \
+    --argjson amount "${deposit_amount}" \
+    --argjson multiplier "$(jq -r '.multiplier' <<<"${chain_setting}")" \
+    '$amount * $multiplier * 1000000000')"
+readonly minimum_activation_gwei="$(jq -nr \
+    --argjson amount "$(jq -r '.min_activation_amount' <<<"${chain_setting}")" \
+    --argjson multiplier "$(jq -r '.multiplier' <<<"${chain_setting}")" \
+    '$amount * $multiplier * 1000000000')"
+[[ "${expected_deposit_gwei}" =~ ^[1-9][0-9]*$ ]] \
+    || fail "--amount must produce a whole positive Gwei value."
+[[ "${minimum_activation_gwei}" =~ ^[1-9][0-9]*$ ]] \
+    || fail "Published minimum activation amount is invalid."
+(( expected_deposit_gwei >= minimum_activation_gwei )) \
+    || fail "--amount must be at least $(jq -r '.min_activation_amount' <<<"${chain_setting}")."
 readonly root_path="${ABPOS_ROOT_PATH:-/data/${chain_name}/${network}}"
 readonly keys_path="${root_path}/keys"
 readonly validator_keys_path="${keys_path}/validator_keys"
@@ -679,7 +721,7 @@ if [[ "${existing_file_count}" -eq 0 ]]; then
             --withdrawal_address="${withdrawal_address}" \
             --compounding \
             --amount="${deposit_amount}" \
-            --devnet_chain_setting="${devnet_chain_setting}" \
+            --devnet_chain_setting="${chain_setting}" \
             "--folder=${generation_dir}"; then
             rm -rf -- "${generation_dir}"
             fail "EthStaker Deposit CLI failed to generate validator keys."
@@ -708,7 +750,7 @@ if [[ "${existing_file_count}" -eq 0 ]]; then
             --withdrawal_address="${withdrawal_address}" \
             --compounding \
             --amount="${deposit_amount}" \
-            --devnet_chain_setting="${devnet_chain_setting}" \
+            --devnet_chain_setting="${chain_setting}" \
             --folder=/app
         normalize_legacy_output
     fi
@@ -786,11 +828,8 @@ readonly deposit_file="${deposit_files[0]}"
 
 jq -e \
     --arg chain "${chain_name}" \
-    --arg fork_version "$(jq -r '.genesis_fork_version' <<<"${devnet_chain_setting}")" \
-    --argjson expected_amount "$(jq -n \
-        --argjson amount "${deposit_amount}" \
-        --argjson multiplier "$(jq -r '.multiplier' <<<"${devnet_chain_setting}")" \
-        '$amount * $multiplier * 1000000000')" '
+    --arg fork_version "$(jq -r '.genesis_fork_version' <<<"${chain_setting}")" \
+    --argjson expected_amount "${expected_deposit_gwei}" '
         type == "array"
         and length > 0
         and all(.[];
@@ -812,6 +851,7 @@ color "1;36" "Chain: ${chain_name}"
 color "1;36" "Network: ${network}"
 color "1;36" "Withdrawal address: ${withdrawal_address}"
 color "1;36" "Validator count: ${validator_count}"
+color "1;36" "Deposit amount per validator: ${deposit_amount}"
 color "1;36" "Validator keys: ${validator_keys_path}"
 color "1;36" "Mnemonic backup: ${mnemonic_path}"
 color "1;36" "Keystore password: ${password_path}"

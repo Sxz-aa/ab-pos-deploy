@@ -281,29 +281,33 @@ function validate_network() {
 
     jq -e \
         --arg chain "${target_chain}" \
-        --arg network "${target_network}" '
+        '
             type == "object"
-            and .chain == $chain
-            and .network == $network
-            and (.deposit_amount | type == "number" and . > 0)
-            and (.devnet_chain_setting | type == "object")
-            and .devnet_chain_setting.network_name == $chain
-            and (.devnet_chain_setting.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
-            and (.devnet_chain_setting.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
-            and (.devnet_chain_setting.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
-            and (.devnet_chain_setting.multiplier | type == "number" and . > 0)
-            and (.devnet_chain_setting.min_activation_amount | type == "number" and . > 0)
-            and (.devnet_chain_setting.min_deposit_amount | type == "number" and . > 0)
-            and .deposit_amount >= .devnet_chain_setting.min_activation_amount
-            and .devnet_chain_setting.min_activation_amount >= .devnet_chain_setting.min_deposit_amount
+            and (keys | sort) == ([
+                "network_name",
+                "genesis_fork_version",
+                "exit_fork_version",
+                "genesis_validator_root",
+                "multiplier",
+                "min_activation_amount",
+                "min_deposit_amount"
+            ] | sort)
+            and .network_name == $chain
+            and (.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+            and (.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+            and (.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
+            and (.multiplier | type == "number" and . > 0)
+            and (.min_activation_amount | type == "number" and . > 0)
+            and (.min_deposit_amount | type == "number" and . > 0)
+            and .min_activation_amount >= .min_deposit_amount
         ' "${target_share_dir}/deposit-settings.json" >/dev/null \
         || fail "deposit-settings.json is invalid for ${target_chain}/${target_network}"
     settings_genesis_fork_version="$(jq -r \
-        '.devnet_chain_setting.genesis_fork_version' "${target_share_dir}/deposit-settings.json")"
+        '.genesis_fork_version' "${target_share_dir}/deposit-settings.json")"
     settings_exit_fork_version="$(jq -r \
-        '.devnet_chain_setting.exit_fork_version' "${target_share_dir}/deposit-settings.json")"
+        '.exit_fork_version' "${target_share_dir}/deposit-settings.json")"
     settings_genesis_validators_root="$(jq -r \
-        '.devnet_chain_setting.genesis_validator_root' "${target_share_dir}/deposit-settings.json")"
+        '.genesis_validator_root' "${target_share_dir}/deposit-settings.json")"
     [[ "${settings_genesis_fork_version,,}" == \
         "$(require_yaml_scalar "${target_share_dir}/config.yaml" GENESIS_FORK_VERSION | tr '[:upper:]' '[:lower:]')" ]] \
         || fail "deposit-settings.json genesis_fork_version does not match config.yaml"

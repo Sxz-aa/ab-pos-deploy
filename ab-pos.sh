@@ -66,6 +66,7 @@ Validator behavior:
 
 Core options:
   --withdrawal-address ADDRESS   Required when generating new validator keys
+  --amount AMOUNT                Per-validator Deposit amount when generating keys
   --fee-recipient ADDRESS        Required only when no saved value exists
   --validator-count NUMBER       Default: 1000
   --checkpoint-url URL           Override the Release checkpoint URL
@@ -102,6 +103,7 @@ Examples:
 
   ./ab-pos.sh testnet lighthouse geth \
     --validator \
+    --amount 32 \
     --withdrawal-address 0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332 \
     --fee-recipient 0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 USAGE
@@ -271,6 +273,7 @@ keys_dir_selected=false
 password_file=""
 password_file_selected=false
 validator_count="1000"
+validator_deposit_amount="${VALIDATOR_DEPOSIT_AMOUNT:-}"
 assume_yes=false
 public_ip_override=""
 node_public_ip=""
@@ -346,6 +349,7 @@ while [[ "$#" -gt 0 ]]; do
         --withdrawal-address) withdrawal_address="${2:-}"; shift ;;
         --fee-recipient) fee_recipient="${2:-}"; shift ;;
         --validator-count) validator_count="${2:-}"; shift ;;
+        --amount) validator_deposit_amount="${2:-}"; shift ;;
         --checkpoint-url) checkpoint_url="${2:-}"; shift ;;
         --release) release_version="${2:-}"; shift ;;
         --release-repo) release_repo="${2:-}"; shift ;;
@@ -1562,29 +1566,33 @@ for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
 done
 jq -e \
     --arg chain "${chain_name}" \
-    --arg network "${network}" '
+    '
         type == "object"
-        and .chain == $chain
-        and .network == $network
-        and (.deposit_amount | type == "number" and . > 0)
-        and (.devnet_chain_setting | type == "object")
-        and .devnet_chain_setting.network_name == $chain
-        and (.devnet_chain_setting.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
-        and (.devnet_chain_setting.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
-        and (.devnet_chain_setting.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
-        and (.devnet_chain_setting.multiplier | type == "number" and . > 0)
-        and (.devnet_chain_setting.min_activation_amount | type == "number" and . > 0)
-        and (.devnet_chain_setting.min_deposit_amount | type == "number" and . > 0)
-        and .deposit_amount >= .devnet_chain_setting.min_activation_amount
-        and .devnet_chain_setting.min_activation_amount >= .devnet_chain_setting.min_deposit_amount
+        and (keys | sort) == ([
+            "network_name",
+            "genesis_fork_version",
+            "exit_fork_version",
+            "genesis_validator_root",
+            "multiplier",
+            "min_activation_amount",
+            "min_deposit_amount"
+        ] | sort)
+        and .network_name == $chain
+        and (.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+        and (.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+        and (.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
+        and (.multiplier | type == "number" and . > 0)
+        and (.min_activation_amount | type == "number" and . > 0)
+        and (.min_deposit_amount | type == "number" and . > 0)
+        and .min_activation_amount >= .min_deposit_amount
     ' "${share_dir}/deposit-settings.json" >/dev/null \
     || fail "Invalid deposit settings for ${chain_name}/${network}."
 settings_genesis_fork_version="$(jq -r \
-    '.devnet_chain_setting.genesis_fork_version // empty' "${share_dir}/deposit-settings.json")"
+    '.genesis_fork_version // empty' "${share_dir}/deposit-settings.json")"
 settings_exit_fork_version="$(jq -r \
-    '.devnet_chain_setting.exit_fork_version // empty' "${share_dir}/deposit-settings.json")"
+    '.exit_fork_version // empty' "${share_dir}/deposit-settings.json")"
 settings_genesis_validators_root="$(jq -r \
-    '.devnet_chain_setting.genesis_validator_root // empty' "${share_dir}/deposit-settings.json")"
+    '.genesis_validator_root // empty' "${share_dir}/deposit-settings.json")"
 published_genesis_validators_root="$(tr -d '[:space:]' < "${share_dir}/genesis_validators_root.txt")"
 [[ "${settings_genesis_fork_version,,}" == \
     "$(yaml_scalar "${share_dir}/config.yaml" GENESIS_FORK_VERSION | tr '[:upper:]' '[:lower:]')" ]] \
@@ -1691,7 +1699,7 @@ function generate_validator_keys() {
     local mnemonic
     local password
     local deposit_amount
-    local devnet_setting
+    local chain_setting
 
     keys_parent="$(dirname "${keys_dir}")"
     host_uid="${SUDO_UID:-$(id -u)}"
@@ -1742,25 +1750,36 @@ function generate_validator_keys() {
 
     mnemonic="$(<"${mnemonic_file}")"
     password="$(<"${password_file}")"
+    [[ -n "${validator_deposit_amount}" ]] \
+        || fail "--amount is required when generating new validator keys."
+    deposit_amount="$(jq -nr --argjson value "${validator_deposit_amount}" \
+        '$value | select(type == "number" and . > 0) | tostring')" \
+        || fail "--amount must be a positive number."
+    [[ -n "${deposit_amount}" ]] || fail "--amount must be a positive number."
     jq -e \
         --arg chain "${chain_name}" \
-        --arg network "${network}" '
+        --argjson amount "${deposit_amount}" '
             type == "object"
-            and .chain == $chain
-            and .network == $network
-            and (.deposit_amount | type == "number" and . > 0)
-            and (.devnet_chain_setting | type == "object")
-            and .devnet_chain_setting.network_name == $chain
-            and (.devnet_chain_setting.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
-            and (.devnet_chain_setting.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
-            and (.devnet_chain_setting.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
-            and (.devnet_chain_setting.multiplier | type == "number" and . > 0)
-            and (.devnet_chain_setting.min_activation_amount | type == "number" and . > 0)
-            and (.devnet_chain_setting.min_deposit_amount | type == "number" and . > 0)
+            and (keys | sort) == ([
+                "network_name",
+                "genesis_fork_version",
+                "exit_fork_version",
+                "genesis_validator_root",
+                "multiplier",
+                "min_activation_amount",
+                "min_deposit_amount"
+            ] | sort)
+            and .network_name == $chain
+            and (.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+            and (.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+            and (.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
+            and (.multiplier | type == "number" and . > 0)
+            and (.min_activation_amount | type == "number" and . > 0)
+            and (.min_deposit_amount | type == "number" and . > 0)
+            and $amount >= .min_activation_amount
         ' "${share_dir}/deposit-settings.json" >/dev/null \
-        || fail "Invalid deposit settings in ${share_dir}/deposit-settings.json"
-    deposit_amount="$(jq -r '.deposit_amount | tostring' "${share_dir}/deposit-settings.json")"
-    devnet_setting="$(jq -c '.devnet_chain_setting' "${share_dir}/deposit-settings.json")"
+        || fail "--amount does not satisfy ${share_dir}/deposit-settings.json."
+    chain_setting="$(jq -c '.' "${share_dir}/deposit-settings.json")"
 
     if [[ "${deployment_mode}" == "binary" ]]; then
         local generation_dir
@@ -1778,7 +1797,7 @@ function generate_validator_keys() {
             --withdrawal_address="${withdrawal_address}" \
             --compounding \
             --amount="${deposit_amount}" \
-            --devnet_chain_setting="${devnet_setting}" \
+            --devnet_chain_setting="${chain_setting}" \
             "--folder=${generation_dir}"; then
             rm -rf -- "${generation_dir}"
             fail "EthStaker Deposit CLI failed to generate validator keys."
@@ -1803,7 +1822,7 @@ function generate_validator_keys() {
             --withdrawal_address="${withdrawal_address}" \
             --compounding \
             --amount="${deposit_amount}" \
-            --devnet_chain_setting="${devnet_setting}" \
+            --devnet_chain_setting="${chain_setting}" \
             --folder=/app
     fi
 
