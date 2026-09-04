@@ -64,11 +64,11 @@ Verify the checkpoint provider through an independent trusted channel before usi
 
 ### 3.2 Add validator duties
 
-A validator deployment creates a new mnemonic, password, keystores, and deposit data when its validator key directory is empty.
+A validator deployment can generate a new key set and start the Validator Client in one command.
 
 ```bash
 sudo bash ab-pos.sh testnet prysm geth \
-  --validator \
+  --generate-keys --validator \
   --validator-count 1000 \
   --amount 2048000 \
   --withdrawal-address 0x0000000000000000000000000000000000000000 \
@@ -79,7 +79,7 @@ Lighthouse uses the same options:
 
 ```bash
 sudo bash ab-pos.sh testnet lighthouse geth \
-  --validator \
+  --generate-keys --validator \
   --validator-count 1000 \
   --amount 2048000 \
   --withdrawal-address 0x0000000000000000000000000000000000000000 \
@@ -87,16 +87,19 @@ sudo bash ab-pos.sh testnet lighthouse geth \
 ```
 
 Replace every example address before running either command.
+Use `--generate-keys` only when creating a new batch. On later node upgrades,
+repeat the command with `--validator` but without the key-generation options.
 
 The default key locations are:
 
 ```text
 /data/abcore/testnet/
-|-- mnemonic.txt
-|-- pwd.txt
-`-- validator-keys/
-    |-- keystore-*.json
-    `-- deposit_data-*.json
+`-- keys/
+    |-- mnemonic.txt
+    |-- pwd.txt
+    `-- validator_keys/
+        |-- keystore-*.json
+        `-- deposit_data-*.json
 ```
 
 Generating keys and starting a validator client does not complete the staking process. Submit the generated deposit data through the approved on-chain deposit process and wait for the activation queue before expecting validator duties.
@@ -119,7 +122,7 @@ Add `--binary` to any node command to download and run native client binaries in
 sudo bash ab-pos.sh testnet prysm geth --binary
 ```
 
-The selected Network Release supplies the patched AB Geth binary. Prysm and Lighthouse binaries are downloaded from their official GitHub Releases. When a non-genesis validator needs new keys, the EthStaker Deposit CLI binary is downloaded from its official GitHub Release. Client binaries are verified before installation under `/data/<chain>/<network>/bin/`.
+The selected Network Release supplies the patched AB Geth binary. Prysm and Lighthouse binaries are downloaded from their official GitHub Releases. With `--generate-keys --binary`, the EthStaker Deposit CLI binary is downloaded from its official GitHub Release. Client binaries are verified before installation under `/data/<chain>/<network>/bin/`.
 
 Binary processes run in detached sessions and write logs under `/data/<chain>/<network>/logs/`. They are not configured to start automatically after a server reboot.
 

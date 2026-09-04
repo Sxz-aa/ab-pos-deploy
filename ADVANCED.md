@@ -285,8 +285,7 @@ Important subdirectories and files include:
 |-- geth/                   Execution-layer database
 |-- prysm/ or lighthouse/   Beacon database
 |-- *-validator/            Validator client and slashing data
-|-- keys/                   Genesis Validator keys
-|-- validator-keys/         Post-genesis Validator keys
+|-- keys/                   Validator keys and Deposit Data
 |-- bin/                    Native binaries
 |-- run/                    Native launchers and PID files
 |-- logs/                   Native client logs
@@ -320,16 +319,72 @@ sudo ./ab-pos.sh testnet prysm geth \
 
 Never run the same validator pubkey from two validator clients. Preserve the validator client data directory when upgrading because it contains slashing protection state.
 
-### 6.1 Validator key-generation options
+### 6.1 Validator key generation and import
 
-The following options control post-genesis Validator key generation:
+Key generation, key import, and synchronization source are independent:
+
+| Command options | Result |
+| --- | --- |
+| `--generate-keys` | Generate keys and Deposit Data, then exit without changing node services. |
+| `--generate-keys --validator` | Generate a batch, import it, and deploy the Validator Client with the node. |
+| `--validator` | Run the Validator Client. If its wallet is empty, import existing keystores; otherwise reuse the existing wallet. |
+| `--import-keys` | Import all keystores not already present and restart only the installed Validator Client. |
+| `--genesis` | Synchronize the node from Genesis. It does not generate or select keys. |
+
+Key-generation options:
 
 | Option | Default | Behavior |
 | --- | --- | --- |
-| `--validator-count` | `1000` | Number of keys generated when the Validator key directory is empty. It does not add keys to an existing key set. |
-| `--amount` | None | Required when generating keys. It is the positive whole-token Deposit amount for each Validator and must satisfy the selected Network Release. |
-| `--withdrawal-address` | None | Required for a post-genesis Validator deployment. New keys use it for their withdrawal credentials. |
-| `--fee-recipient` | Saved value | Required on the first Validator installation. The installer saves it in the network data directory and reuses it on subsequent runs. |
+| `--validator-count` | `1000` | Number of keys in the new batch. |
+| `--validator-start-index` | `0` | First derivation index used with the selected mnemonic. |
+| `--mnemonic-file` | `<data-dir>/keys/mnemonic.txt` | Reuse this mnemonic when it exists; otherwise create it. |
+| `--keys-dir` | `<data-dir>/keys/validator_keys` | Shared keystore and Deposit Data directory. For generation, its final component must be `validator_keys`. |
+| `--password-file` | `<data-dir>/keys/pwd.txt` | Password shared by keystores in the selected key directory. |
+| `--amount` | None | Required for generation. Positive whole-token Deposit amount per Validator. |
+| `--withdrawal-address` | None | Required for generation. Withdrawal address encoded in the new Deposit Data. |
+| `--fee-recipient` | Saved value | Required only when deploying the Validator Client and no saved value exists. |
+
+Key-only generation reads `deposit-settings.json` from the latest Network
+Release by default. Use `--release` to pin a Release or `--deposit-settings`
+to use a reviewed local file.
+
+To continue the default mnemonic after a 1000-key batch:
+
+```bash
+sudo bash ab-pos.sh testnet \
+  --generate-keys \
+  --validator-count 1000 \
+  --validator-start-index 1000 \
+  --amount 2048000 \
+  --withdrawal-address 0x0000000000000000000000000000000000000000
+```
+
+To create a separate mnemonic, select another mnemonic filename. Its first
+batch may start at index zero while sharing the canonical keystore directory:
+
+```bash
+sudo bash ab-pos.sh testnet \
+  --generate-keys \
+  --mnemonic-file /data/abcore/testnet/keys/mnemonic-2.txt \
+  --validator-count 1000 \
+  --validator-start-index 0 \
+  --amount 2048000 \
+  --withdrawal-address 0x0000000000000000000000000000000000000000
+```
+
+Use one keystore password for all keystores in a shared key directory. The
+generator writes directly to that directory, checks only the new files, and
+removes the new batch if its pubkeys overlap existing keys. It does not store
+or infer the next derivation index.
+
+After key-only generation on an installed Validator node, import the batch:
+
+```bash
+sudo bash ab-pos.sh testnet --import-keys
+```
+
+For a binary deployment, add `--binary`. This operation leaves Geth and the
+Beacon Node running and restarts only the Validator Client.
 
 For the current AB Core configuration, `--amount 32000` is the minimum
 activation amount and `--amount 2048000` creates a 2,048,000 AB Deposit record

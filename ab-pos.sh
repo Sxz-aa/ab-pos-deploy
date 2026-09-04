@@ -4,7 +4,7 @@ set -euo pipefail
 
 # Install and operate an AB PoS node with Docker or native binaries.
 
-readonly script_version="0.2.0"
+readonly script_version="0.3.0"
 readonly default_release_repo="${ABPOS_RELEASE_REPO:-abdaodev/ab-pos-deploy}"
 readonly default_chain_name="${ABPOS_CHAIN_NAME:-abcore}"
 readonly default_root_dir="${ABPOS_ROOT_DIR:-/data}"
@@ -13,7 +13,7 @@ readonly geth_image_override="${GETH_DOCKER_IMAGE:-}"
 readonly default_prysm_beacon_image="${PRYSM_BEACON_IMAGE:-offchainlabs/prysm-beacon-chain:stable}"
 readonly default_prysm_validator_image="${PRYSM_VALIDATOR_IMAGE:-offchainlabs/prysm-validator:stable}"
 readonly default_lighthouse_image="${LIGHTHOUSE_IMAGE:-sigp/lighthouse:latest}"
-readonly default_deposit_cli_image="${DEPOSIT_CLI_IMAGE:-ghcr.io/ethstaker/ethstaker-deposit-cli:latest}"
+readonly default_deposit_cli_image="${DEPOSIT_CLI_IMAGE:-ghcr.io/ethstaker/ethstaker-deposit-cli:v1.3.0}"
 readonly geth_binary_url_override="${AB_GETH_BINARY_URL:-}"
 readonly geth_binary_checksum_url_override="${AB_GETH_BINARY_SHA256_URL:-}"
 readonly prysm_release_version="${PRYSM_RELEASE_VERSION:-latest}"
@@ -41,6 +41,7 @@ Usage:
   ab-pos.sh [chain] <network> --logs [service]
   ab-pos.sh [chain] <network> --stop
   ab-pos.sh [chain] <network> --restart
+  ab-pos.sh [chain] <network> --import-keys
 
 Arguments:
   chain               Chain name; default: abcore
@@ -58,27 +59,34 @@ Node modes:
   --archive            Run Geth in archive mode
 
 Validator behavior:
-  --genesis --validator
-      Import existing validator keys. Keys are never generated in this mode.
-
   --validator
-      Generate a new mnemonic and validator keys when the key directory is
-      empty, then import them. The generated deposit data must still be
-      submitted before the validators can become active.
+      Run a Validator Client. Existing keystores are imported automatically
+      when the Validator wallet is empty.
+
+  --generate-keys
+      Generate validator keys and deposit data, then exit unless --validator
+      is also supplied.
+
+  --import-keys
+      Import keystores into an installed Validator wallet and restart only the
+      Validator Client.
 
 Core options:
   --withdrawal-address ADDRESS   Required when generating new validator keys
   --amount AMOUNT                Whole-token Deposit amount when generating keys
   --fee-recipient ADDRESS        Required only when no saved value exists
   --validator-count NUMBER       Default: 1000
+  --validator-start-index NUMBER Default: 0
+  --mnemonic-file PATH           Default: <data-dir>/keys/mnemonic.txt
+  --deposit-settings FILE        Public settings for key-only generation
   --checkpoint-url URL           Override the Release checkpoint URL
   --release VERSION              Release tag; default: latest
   --release-repo OWNER/REPO      Default: abdaodev/ab-pos-deploy
   --release-url URL              Download a specific .tar.gz Release archive
   --root-dir PATH                Default: /data
   --data-dir PATH                Default: <root-dir>/<chain>/<network>
-  --keys-dir PATH                Keystores to import when supplied
-  --password-file PATH           Keystore import or Prysm wallet password
+  --keys-dir PATH                Keystore and Deposit Data directory
+  --password-file PATH           Keystore and Prysm wallet password
   --public-ip ADDRESS            Override Genesis node public IPv4 detection
   --docker                       Deploy containers; default
   --binary                       Deploy downloaded native binaries
@@ -91,6 +99,7 @@ Operations:
   --logs [geth|beacon|validator] Follow logs
   --stop                         Stop this node
   --restart                      Restart this node
+  --import-keys                  Import keys and restart the Validator Client
 
 Examples:
   ./ab-pos.sh testnet prysm geth
@@ -104,7 +113,7 @@ Examples:
     --fee-recipient 0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   ./ab-pos.sh testnet lighthouse geth \
-    --validator \
+    --generate-keys --validator \
     --amount 32000 \
     --withdrawal-address 0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332 \
     --fee-recipient 0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
@@ -160,7 +169,8 @@ function install_missing_dependencies() {
         esac
     done
 
-    if [[ "${genesis_mode}" == true && -z "${public_ip_override}" ]] \
+    if [[ "${genesis_mode}" == true && "${key_generation_only:-false}" == false \
+        && -z "${public_ip_override}" ]] \
         && ! command -v dig >/dev/null 2>&1; then
         packages+=(dnsutils)
     fi
@@ -176,7 +186,7 @@ function install_missing_dependencies() {
 
     if [[ "${deployment_mode}" == "docker" ]]; then
         command -v docker >/dev/null 2>&1 || packages+=(docker.io)
-    else
+    elif [[ "${key_generation_only:-false}" == false ]]; then
         command -v setsid >/dev/null 2>&1 || packages+=(util-linux)
     fi
 
@@ -277,6 +287,8 @@ consensus_client=""
 execution_client=""
 genesis_mode=false
 validator_mode=false
+generate_keys=false
+import_keys=false
 archive_mode=false
 operation="install"
 log_service=""
@@ -298,10 +310,12 @@ deployment_mode_selected=false
 root_dir="${default_root_dir}"
 data_dir=""
 keys_dir=""
-keys_dir_selected=false
 password_file=""
 password_file_selected=false
+mnemonic_file=""
+deposit_settings_file=""
 validator_count="1000"
+validator_start_index="0"
 validator_deposit_amount="${VALIDATOR_DEPOSIT_AMOUNT:-}"
 assume_yes=false
 public_ip_override=""
@@ -374,10 +388,13 @@ while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --genesis) genesis_mode=true ;;
         --validator) validator_mode=true ;;
+        --generate-keys) generate_keys=true ;;
+        --import-keys) import_keys=true; operation="import-keys" ;;
         --archive) archive_mode=true ;;
         --withdrawal-address) withdrawal_address="${2:-}"; shift ;;
         --fee-recipient) fee_recipient="${2:-}"; shift ;;
         --validator-count) validator_count="${2:-}"; shift ;;
+        --validator-start-index) validator_start_index="${2:-}"; shift ;;
         --amount) validator_deposit_amount="${2:-}"; shift ;;
         --checkpoint-url) checkpoint_url="${2:-}"; shift ;;
         --release) release_version="${2:-}"; shift ;;
@@ -385,8 +402,10 @@ while [[ "$#" -gt 0 ]]; do
         --release-url) release_url="${2:-}"; shift ;;
         --root-dir) root_dir="${2:-}"; shift ;;
         --data-dir) data_dir="${2:-}"; shift ;;
-        --keys-dir) keys_dir="${2:-}"; keys_dir_selected=true; shift ;;
+        --keys-dir) keys_dir="${2:-}"; shift ;;
         --password-file) password_file="${2:-}"; password_file_selected=true; shift ;;
+        --mnemonic-file) mnemonic_file="${2:-}"; shift ;;
+        --deposit-settings) deposit_settings_file="${2:-}"; shift ;;
         --public-ip) public_ip_override="${2:-}"; shift ;;
         --docker)
             [[ "${deployment_mode_selected}" == false || "${deployment_mode}" == "docker" ]] \
@@ -418,8 +437,22 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 [[ "${validator_count}" =~ ^[1-9][0-9]*$ ]] || fail "Validator count must be a positive integer."
+[[ "${validator_start_index}" =~ ^[0-9]+$ ]] || fail "Validator start index must be a non-negative integer."
 [[ "${release_repo}" =~ ^[^/]+/[^/]+$ ]] || fail "Release repository must use OWNER/REPO format."
 
+[[ "${import_keys}" == false || "${generate_keys}" == false ]] \
+    || fail "--generate-keys and --import-keys cannot be used together."
+[[ "${import_keys}" == false || "${validator_mode}" == false ]] \
+    || fail "--import-keys already targets the installed Validator Client; do not add --validator."
+key_generation_only=false
+if [[ "${generate_keys}" == true && "${validator_mode}" == false ]]; then
+    key_generation_only=true
+fi
+[[ "${generate_keys}" == false || "${operation}" == install ]] \
+    || fail "--generate-keys cannot be combined with a node operation."
+if [[ -n "${deposit_settings_file}" && "${key_generation_only}" == false ]]; then
+    fail "--deposit-settings is supported only with key-only --generate-keys."
+fi
 data_dir="${data_dir:-${root_dir}/${chain_name}/${network}}"
 
 function detect_docker_consensus_client() {
@@ -539,7 +572,7 @@ function select_consensus_client() {
     esac
 }
 
-if [[ -z "${consensus_client}" ]]; then
+if [[ -z "${consensus_client}" && "${key_generation_only}" == false ]]; then
     detected_consensus_client=""
     detection_status=0
     detected_consensus_client="$(detect_installed_consensus_client)" || detection_status=$?
@@ -559,24 +592,20 @@ if [[ -z "${consensus_client}" ]]; then
     esac
 fi
 
-case "${consensus_client}" in
-    prysm | lighthouse) ;;
-    *) fail "Unsupported consensus client: ${consensus_client}" ;;
-esac
-
-if [[ -z "${keys_dir}" ]]; then
-    if [[ "${validator_mode}" == true && "${genesis_mode}" == false ]]; then
-        keys_dir="${data_dir}/validator-keys"
-    else
-        keys_dir="${data_dir}/keys/validator_keys"
-    fi
+if [[ "${key_generation_only}" == false ]]; then
+    case "${consensus_client}" in
+        prysm | lighthouse) ;;
+        *) fail "Unsupported consensus client: ${consensus_client}" ;;
+    esac
 fi
+
+keys_dir="${keys_dir:-${data_dir}/keys/validator_keys}"
 password_file="${password_file:-$(dirname "${keys_dir}")/pwd.txt}"
 share_dir="${data_dir}/share"
 geth_data_dir="${data_dir}/geth"
-beacon_data_dir="${data_dir}/${consensus_client}"
-validator_data_dir="${data_dir}/${consensus_client}-validator"
-mnemonic_file="$(dirname "${password_file}")/mnemonic.txt"
+beacon_data_dir="${data_dir}/${consensus_client:-consensus}"
+validator_data_dir="${data_dir}/${consensus_client:-consensus}-validator"
+mnemonic_file="${mnemonic_file:-$(dirname "${keys_dir}")/mnemonic.txt}"
 deposit_cli_image="${default_deposit_cli_image}"
 config_dir="${data_dir}/config"
 geth_config_dir="${config_dir}/execution/geth"
@@ -699,7 +728,7 @@ function validator_keys_are_imported() {
 }
 
 function validator_key_import_required() {
-    [[ "${keys_dir_selected}" == true ]] || ! validator_keys_are_imported
+    [[ "${generate_keys}" == true ]] || ! validator_keys_are_imported
 }
 
 function save_local_setting() {
@@ -747,7 +776,6 @@ function password_file_from_existing_container() {
 
 function resolve_saved_validator_settings() {
     local detected_value
-    local saved_value
 
     mkdir -p "${data_dir}"
 
@@ -763,6 +791,13 @@ function resolve_saved_validator_settings() {
     require_address "fee recipient" "${fee_recipient}"
     save_local_setting "${fee_recipient_file}" "${fee_recipient}" 0644
 
+    resolve_validator_password_file
+}
+
+function resolve_validator_password_file() {
+    local detected_value
+    local saved_value
+
     if [[ "${password_file_selected}" == false && ! -s "${password_file}" ]]; then
         saved_value="$(first_data_line "${validator_password_reference_file}")"
         if [[ -n "${saved_value}" && -s "${saved_value}" ]]; then
@@ -774,7 +809,6 @@ function resolve_saved_validator_settings() {
             fi
         fi
     fi
-    mnemonic_file="$(dirname "${password_file}")/mnemonic.txt"
 }
 
 function save_validator_password_reference() {
@@ -1206,15 +1240,121 @@ function operate_existing_binary_node() {
     esac
 }
 
+function import_keys_into_docker_validator() {
+    local runtime_validator_container
+    local validator_image
+    local import_log
+    local import_status=0
+
+    runtime_validator_container="$(existing_validator_container)"
+    [[ -n "${runtime_validator_container}" ]] \
+        || fail "Validator container was not found. Install a Validator node before using --import-keys."
+    validator_image="$(docker container inspect "${runtime_validator_container}" --format '{{.Config.Image}}')"
+    [[ -n "$(find "${keys_dir}" -maxdepth 1 -type f -name 'keystore-*.json' -print -quit 2>/dev/null)" ]] \
+        || fail "No validator keystores were found in ${keys_dir}."
+    resolve_validator_password_file
+    [[ -s "${password_file}" ]] || fail "Missing validator password file: ${password_file}"
+
+    docker stop --time 30 "${runtime_validator_container}" >/dev/null
+    import_log="$(mktemp "${data_dir}/validator-import.XXXXXX")"
+    if [[ "${consensus_client}" == "prysm" ]]; then
+        docker run --rm \
+            -v "${validator_data_dir}:/wallet" \
+            -v "${keys_dir}:/keys:ro" \
+            -v "${password_file}:/password.txt:ro" \
+            "${validator_image}" \
+            accounts import --accept-terms-of-use=true \
+            --wallet-dir=/wallet --wallet-password-file=/password.txt \
+            --account-password-file=/password.txt --keys-dir=/keys \
+            >"${import_log}" 2>&1 || import_status=$?
+        cat "${import_log}"
+        if (( import_status != 0 )) && prysm_import_was_duplicate_only "${import_log}"; then
+            color "33" "All supplied Prysm validator keys were already imported."
+            import_status=0
+        fi
+    else
+        docker run --rm \
+            -v "${validator_data_dir}:/validator-data" \
+            -v "${share_dir}:/share:ro" \
+            -v "${keys_dir}:/keys:ro" \
+            -v "${password_file}:/password.txt:ro" \
+            "${validator_image}" \
+            lighthouse account validator import \
+            --testnet-dir=/share --datadir=/validator-data \
+            --directory=/keys --reuse-password --password-file=/password.txt \
+            >"${import_log}" 2>&1 || import_status=$?
+        cat "${import_log}"
+    fi
+    docker start "${runtime_validator_container}" >/dev/null
+    rm -f -- "${import_log}"
+    if (( import_status != 0 )); then
+        fail "Validator key import failed; the existing Validator Client was restarted."
+    fi
+    color "32" "Validator keys imported. Restarted ${runtime_validator_container}."
+}
+
+function import_keys_into_binary_validator() {
+    local import_log
+    local import_status=0
+
+    [[ -x "$(binary_launcher_file validator)" ]] \
+        || fail "Validator launcher was not found. Install a binary Validator node before using --import-keys."
+    [[ -n "$(find "${keys_dir}" -maxdepth 1 -type f -name 'keystore-*.json' -print -quit 2>/dev/null)" ]] \
+        || fail "No validator keystores were found in ${keys_dir}."
+    resolve_validator_password_file
+    [[ -s "${password_file}" ]] || fail "Missing validator password file: ${password_file}"
+
+    if [[ "${consensus_client}" == "prysm" ]]; then
+        [[ -x "${bin_dir}/prysm-validator" ]] || fail "Prysm Validator binary is missing."
+    else
+        [[ -x "${bin_dir}/lighthouse" ]] || fail "Lighthouse binary is missing."
+    fi
+
+    stop_binary_service validator
+    import_log="$(mktemp "${data_dir}/validator-import.XXXXXX")"
+    if [[ "${consensus_client}" == "prysm" ]]; then
+        "${bin_dir}/prysm-validator" accounts import --accept-terms-of-use=true \
+            "--wallet-dir=${validator_data_dir}" "--wallet-password-file=${password_file}" \
+            "--account-password-file=${password_file}" "--keys-dir=${keys_dir}" \
+            >"${import_log}" 2>&1 || import_status=$?
+        cat "${import_log}"
+        if (( import_status != 0 )) && prysm_import_was_duplicate_only "${import_log}"; then
+            color "33" "All supplied Prysm validator keys were already imported."
+            import_status=0
+        fi
+    else
+        "${bin_dir}/lighthouse" account validator import \
+            "--testnet-dir=${share_dir}" "--datadir=${validator_data_dir}" \
+            "--directory=${keys_dir}" --reuse-password "--password-file=${password_file}" \
+            >"${import_log}" 2>&1 || import_status=$?
+        cat "${import_log}"
+    fi
+    start_binary_service validator
+    rm -f -- "${import_log}"
+    if (( import_status != 0 )); then
+        fail "Validator key import failed; the existing Validator Client was restarted."
+    fi
+    color "32" "Validator keys imported. Restarted the Validator Client."
+}
+
 if [[ "${operation}" != "install" ]]; then
-    require_command curl
     require_command jq
     if [[ "${deployment_mode}" == "docker" ]]; then
         require_command docker
-        operate_existing_docker_node
+        if [[ "${operation}" == "import-keys" ]]; then
+            import_keys_into_docker_validator
+        else
+            require_command curl
+            operate_existing_docker_node
+        fi
     else
         require_command setsid
-        operate_existing_binary_node
+        if [[ "${operation}" == "import-keys" ]]; then
+            import_keys_into_binary_validator
+        else
+            require_command curl
+            operate_existing_binary_node
+        fi
     fi
     exit 0
 fi
@@ -1231,11 +1371,11 @@ require_command tar
 if [[ "${deployment_mode}" == "docker" ]]; then
     require_command docker
     ensure_docker_available
-else
+elif [[ "${key_generation_only}" == false ]]; then
     require_command setsid
 fi
 
-if [[ "${genesis_mode}" == true ]]; then
+if [[ "${genesis_mode}" == true && "${key_generation_only}" == false ]]; then
     if [[ -n "${public_ip_override}" ]]; then
         node_public_ip="${public_ip_override}"
     else
@@ -1250,14 +1390,17 @@ if [[ "${validator_mode}" == true ]]; then
     resolve_saved_validator_settings
 fi
 
-if [[ "${validator_mode}" == true && "${genesis_mode}" == false ]]; then
-    [[ -n "${withdrawal_address}" ]] || fail "--withdrawal-address is required for a non-genesis validator."
+if [[ "${generate_keys}" == true ]]; then
+    [[ -n "${withdrawal_address}" ]] || fail "--withdrawal-address is required with --generate-keys."
     require_address "withdrawal address" "${withdrawal_address}"
 fi
 
-mkdir -p "${share_dir}" "${geth_data_dir}" "${beacon_data_dir}" "${validator_data_dir}" \
-    "${keys_dir}" "${bin_dir}" "${run_dir}" "${log_dir}" "${geth_config_dir}" \
-    "${prysm_config_dir}" "${lighthouse_config_dir}"
+mkdir -p "${share_dir}" "${keys_dir}" "${bin_dir}"
+if [[ "${key_generation_only}" == false ]]; then
+    mkdir -p "${geth_data_dir}" "${beacon_data_dir}" "${validator_data_dir}" \
+        "${run_dir}" "${log_dir}" "${geth_config_dir}" \
+        "${prysm_config_dir}" "${lighthouse_config_dir}"
+fi
 
 function ensure_local_jwt_secret() {
     local jwt
@@ -1283,7 +1426,9 @@ function ensure_local_jwt_secret() {
     chmod 600 "${jwt_secret_file}"
 }
 
-ensure_local_jwt_secret
+if [[ "${key_generation_only}" == false ]]; then
+    ensure_local_jwt_secret
+fi
 
 function validate_p2p_private_key() {
     local key_file="$1"
@@ -1586,13 +1731,124 @@ function download_release() {
     color "32" "Updated network configuration in ${share_dir}."
 }
 
-resolve_release
-download_release
+function prepare_key_generation_settings() {
+    local release_json
+    local archive_name
+    local archive_url
+    local checksum_url
+    local archive_path
+    local checksum_path
+    local expected_sha256
+    local actual_sha256
+    local temporary_dir
+    local archive_listing
+    local member
+    local normalized_member
+    local member_count=0
+    local release_tag
+    local deposit_settings_member=""
 
-for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
-    deposit_contract_block.txt genesis_validators_root.txt deposit-settings.json; do
-    [[ -s "${share_dir}/${required_file}" ]] || fail "Missing required file: ${share_dir}/${required_file}"
-done
+    if [[ -n "${deposit_settings_file}" ]]; then
+        [[ -s "${deposit_settings_file}" ]] \
+            || fail "Deposit settings file is missing or empty: ${deposit_settings_file}"
+        return 0
+    fi
+
+    if [[ -z "${release_url}" ]]; then
+        if [[ "${release_version}" == latest ]]; then
+            release_json="$(curl -fsSL \
+                "${github_api_url%/}/repos/${release_repo}/releases/latest")" \
+                || fail "Unable to query the latest Network Release."
+        else
+            release_json="$(curl -fsSL \
+                "${github_api_url%/}/repos/${release_repo}/releases/tags/${release_version}")" \
+                || fail "Unable to query Release ${release_version}."
+        fi
+        release_tag="$(jq -r '.tag_name // empty' <<<"${release_json}")"
+        [[ "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] \
+            || fail "Selected Release has an invalid tag: ${release_tag:-empty}."
+        if [[ "${release_tag}" == *-rc.0 ]]; then
+            [[ "$(jq -r '.prerelease // false' <<<"${release_json}")" == true ]] \
+                || fail "Genesis Participation Release ${release_tag} must be a Pre-release."
+        fi
+        archive_name="${chain_name}-${network}-${release_tag}.tar.gz"
+        archive_url="$(jq -r --arg name "${archive_name}" \
+            '[.assets[] | select(.name == $name)][0].browser_download_url // empty' \
+            <<<"${release_json}")"
+        checksum_url="$(jq -r --arg name "${archive_name}.sha256" \
+            '[.assets[] | select(.name == $name)][0].browser_download_url // empty' \
+            <<<"${release_json}")"
+        [[ -n "${archive_url}" && -n "${checksum_url}" ]] \
+            || fail "Release ${release_tag} does not contain ${archive_name} and its checksum."
+    else
+        archive_url="${release_url}"
+        archive_name="$(basename "${archive_url%%\?*}")"
+        [[ "${archive_name}" == "${chain_name}-${network}-"*.tar.gz ]] \
+            || fail "Network archive name does not match ${chain_name}/${network}: ${archive_name}."
+        checksum_url="${archive_url}.sha256"
+    fi
+
+    temporary_dir="$(mktemp -d /tmp/abpos-deposit-settings.XXXXXX)"
+    archive_path="${temporary_dir}/${archive_name}"
+    checksum_path="${archive_path}.sha256"
+    color "34" "Downloading Deposit settings from Release: ${archive_url}"
+    if [[ "${archive_url}" == file://* ]]; then
+        cp -- "${archive_url#file://}" "${archive_path}"
+        cp -- "${checksum_url#file://}" "${checksum_path}"
+    else
+        curl -fL "${archive_url}" -o "${archive_path}" \
+            || fail "Unable to download ${archive_name}."
+        curl -fsSL "${checksum_url}" -o "${checksum_path}" \
+            || fail "Unable to download ${archive_name}.sha256."
+    fi
+    expected_sha256="$(awk 'NR == 1 { print $1 }' "${checksum_path}")"
+    [[ "${expected_sha256}" =~ ^[0-9a-fA-F]{64}$ ]] \
+        || fail "Invalid checksum for ${archive_name}."
+    actual_sha256="$(sha256sum "${archive_path}" | awk '{ print $1 }')"
+    [[ "${actual_sha256,,}" == "${expected_sha256,,}" ]] \
+        || fail "Checksum verification failed for ${archive_name}."
+
+    archive_listing="${temporary_dir}/archive-contents.txt"
+    tar -tzf "${archive_path}" >"${archive_listing}" \
+        || fail "Unable to inspect ${archive_name}."
+    while IFS= read -r member; do
+        normalized_member="${member#./}"
+        [[ -n "${normalized_member}" ]] || continue
+        [[ "${normalized_member}" != /* && "${normalized_member}" != */* ]] \
+            || fail "The selected Release contains an unsafe path: ${member}"
+        [[ "${normalized_member}" != jwtsecret ]] \
+            || fail "The selected Release must not contain jwtsecret."
+        if [[ "${normalized_member}" == deposit-settings.json ]]; then
+            member_count=$((member_count + 1))
+            deposit_settings_member="${member}"
+        fi
+    done <"${archive_listing}"
+    [[ "${member_count}" -eq 1 ]] \
+        || fail "The selected Release must contain exactly one deposit-settings.json."
+    tar -xzf "${archive_path}" -C "${temporary_dir}" "${deposit_settings_member}" \
+        --no-same-owner --no-same-permissions \
+        || fail "Unable to extract ${archive_name}."
+    install -m 0644 "${temporary_dir}/deposit-settings.json" \
+        "${share_dir}/deposit-settings.json"
+    deposit_settings_file="${share_dir}/deposit-settings.json"
+    rm -rf -- "${temporary_dir}"
+    color "32" "Installed public Deposit settings: ${deposit_settings_file}"
+}
+
+if [[ "${key_generation_only}" == true ]]; then
+    prepare_key_generation_settings
+else
+    resolve_release
+    download_release
+fi
+
+if [[ "${key_generation_only}" == false ]]; then
+    for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
+        deposit_contract_block.txt genesis_validators_root.txt deposit-settings.json; do
+        [[ -s "${share_dir}/${required_file}" ]] || fail "Missing required file: ${share_dir}/${required_file}"
+    done
+fi
+active_deposit_settings_file="${deposit_settings_file:-${share_dir}/deposit-settings.json}"
 jq -e \
     --arg chain "${chain_name}" \
     '
@@ -1616,33 +1872,35 @@ jq -e \
         and (.min_activation_amount | type == "number" and . > 0 and . == floor and . <= 9007199)
         and (.min_deposit_amount | type == "number" and . > 0 and . == floor and . <= 9007199)
         and .min_activation_amount >= .min_deposit_amount
-    ' "${share_dir}/deposit-settings.json" >/dev/null \
+    ' "${active_deposit_settings_file}" >/dev/null \
     || fail "Invalid deposit settings for ${chain_name}/${network}."
-settings_genesis_fork_version="$(jq -r \
-    '.genesis_fork_version // empty' "${share_dir}/deposit-settings.json")"
-settings_exit_fork_version="$(jq -r \
-    '.exit_fork_version // empty' "${share_dir}/deposit-settings.json")"
-settings_genesis_validators_root="$(jq -r \
-    '.genesis_validator_root // empty' "${share_dir}/deposit-settings.json")"
-published_genesis_validators_root="$(tr -d '[:space:]' < "${share_dir}/genesis_validators_root.txt")"
-[[ "${settings_genesis_fork_version,,}" == \
-    "$(yaml_scalar "${share_dir}/config.yaml" GENESIS_FORK_VERSION | tr '[:upper:]' '[:lower:]')" ]] \
-    || fail "deposit-settings.json genesis_fork_version does not match config.yaml."
-[[ "${settings_exit_fork_version,,}" == \
-    "$(yaml_scalar "${share_dir}/config.yaml" CAPELLA_FORK_VERSION | tr '[:upper:]' '[:lower:]')" ]] \
-    || fail "deposit-settings.json exit_fork_version does not match CAPELLA_FORK_VERSION."
-[[ "${settings_genesis_validators_root,,}" == "${published_genesis_validators_root,,}" ]] \
-    || fail "deposit-settings.json genesis_validator_root does not match genesis_validators_root.txt."
-if [[ "${genesis_mode}" == false ]]; then
-    for required_file in bootstrap_nodes.txt bootstrap_nodes_execution.txt; do
-        [[ -s "${share_dir}/${required_file}" ]] \
-            || fail "Missing required file: ${share_dir}/${required_file}"
-    done
-fi
+if [[ "${key_generation_only}" == false ]]; then
+    settings_genesis_fork_version="$(jq -r \
+        '.genesis_fork_version // empty' "${share_dir}/deposit-settings.json")"
+    settings_exit_fork_version="$(jq -r \
+        '.exit_fork_version // empty' "${share_dir}/deposit-settings.json")"
+    settings_genesis_validators_root="$(jq -r \
+        '.genesis_validator_root // empty' "${share_dir}/deposit-settings.json")"
+    published_genesis_validators_root="$(tr -d '[:space:]' < "${share_dir}/genesis_validators_root.txt")"
+    [[ "${settings_genesis_fork_version,,}" == \
+        "$(yaml_scalar "${share_dir}/config.yaml" GENESIS_FORK_VERSION | tr '[:upper:]' '[:lower:]')" ]] \
+        || fail "deposit-settings.json genesis_fork_version does not match config.yaml."
+    [[ "${settings_exit_fork_version,,}" == \
+        "$(yaml_scalar "${share_dir}/config.yaml" CAPELLA_FORK_VERSION | tr '[:upper:]' '[:lower:]')" ]] \
+        || fail "deposit-settings.json exit_fork_version does not match CAPELLA_FORK_VERSION."
+    [[ "${settings_genesis_validators_root,,}" == "${published_genesis_validators_root,,}" ]] \
+        || fail "deposit-settings.json genesis_validator_root does not match genesis_validators_root.txt."
+    if [[ "${genesis_mode}" == false ]]; then
+        for required_file in bootstrap_nodes.txt bootstrap_nodes_execution.txt; do
+            [[ -s "${share_dir}/${required_file}" ]] \
+                || fail "Missing required file: ${share_dir}/${required_file}"
+        done
+    fi
 
-if [[ "${genesis_mode}" == false && -z "${checkpoint_url}" ]]; then
-    checkpoint_url="$(first_data_line "${share_dir}/checkpoint_sync_urls.txt")"
-    [[ -n "${checkpoint_url}" ]] || fail "A non-genesis node requires --checkpoint-url or checkpoint_sync_urls.txt."
+    if [[ "${genesis_mode}" == false && -z "${checkpoint_url}" ]]; then
+        checkpoint_url="$(first_data_line "${share_dir}/checkpoint_sync_urls.txt")"
+        [[ -n "${checkpoint_url}" ]] || fail "A non-genesis node requires --checkpoint-url or checkpoint_sync_urls.txt."
+    fi
 fi
 
 function github_release_json() {
@@ -1726,7 +1984,6 @@ function generate_validator_keys() {
     local keys_parent
     local host_uid
     local host_gid
-    local keystore_count
     local mnemonic
     local password
     local deposit_amount
@@ -1745,18 +2002,33 @@ function generate_validator_keys() {
     local cli_minimum_deposit_gwei
     local cli_minimum_deposit_amount
     local deposit_file
+    local file
+    local pubkey
+    local generation_status=0
+    local mnemonic_directory
+    local mnemonic_basename
+    local -a before_files=()
+    local -a new_files=()
+    local -a new_keystores=()
+    local -a new_deposit_files=()
+    local -A existing_files=()
+    local -A existing_pubkeys=()
+    local -A generated_pubkeys=()
 
     keys_parent="$(dirname "${keys_dir}")"
     host_uid="${SUDO_UID:-$(id -u)}"
     host_gid="${SUDO_GID:-$(id -g)}"
-    keystore_count="$(find "${keys_dir}" -maxdepth 1 -type f -name 'keystore-*.json' | wc -l | tr -d ' ')"
-
-    if [[ "${keystore_count}" -gt 0 ]]; then
-        color "33" "Using ${keystore_count} existing validator keystores in ${keys_dir}."
-        return
-    fi
+    [[ "$(basename "${keys_dir}")" == validator_keys ]] \
+        || fail "Key generation requires --keys-dir to end in /validator_keys."
 
     if [[ "${deployment_mode}" == "binary" ]]; then
+        if [[ -z "${platform_arch}" ]]; then
+            case "$(uname -m)" in
+                x86_64 | amd64) platform_arch="amd64" ;;
+                aarch64 | arm64) platform_arch="arm64" ;;
+                *) fail "Unsupported host architecture: $(uname -m)" ;;
+            esac
+        fi
         install_deposit_cli_binary
     else
         require_command docker
@@ -1764,9 +2036,26 @@ function generate_validator_keys() {
             || fail "Docker is required to generate validator keys and is unavailable."
     fi
 
-    mkdir -p "${keys_parent}" "${keys_dir}"
+    mkdir -p "${keys_parent}" "${keys_dir}" "$(dirname "${mnemonic_file}")" \
+        "$(dirname "${password_file}")"
+    if [[ "${EUID}" -eq 0 && -n "${SUDO_UID:-}" ]]; then
+        chown "${host_uid}:${host_gid}" "${keys_parent}" "${keys_dir}" \
+            "$(dirname "${mnemonic_file}")" "$(dirname "${password_file}")"
+    fi
     chmod 700 "${keys_parent}" "${keys_dir}"
     umask 077
+
+    mapfile -t before_files < <(find "${keys_dir}" -maxdepth 1 -type f -print | sort)
+    for file in "${before_files[@]}"; do
+        existing_files["${file}"]=1
+    done
+    while IFS= read -r file; do
+        pubkey="$(jq -r '.pubkey // empty' "${file}" | tr '[:upper:]' '[:lower:]')"
+        pubkey="${pubkey#0x}"
+        [[ "${pubkey}" =~ ^[0-9a-f]{96}$ ]] \
+            || fail "Invalid validator pubkey in existing keystore: ${file}"
+        existing_pubkeys["${pubkey}"]=1
+    done < <(find "${keys_dir}" -maxdepth 1 -type f -name 'keystore-*.json' | sort)
 
     if [[ ! -s "${password_file}" ]]; then
         openssl rand -hex 32 >"${password_file}"
@@ -1781,14 +2070,16 @@ function generate_validator_keys() {
                 --mnemonic_language=english \
                 "--output_file=${mnemonic_file}"
         else
+            mnemonic_directory="$(dirname "${mnemonic_file}")"
+            mnemonic_basename="$(basename "${mnemonic_file}")"
             docker run --rm --tty --env TERM=xterm \
                 --user "${host_uid}:${host_gid}" \
-                -v "${keys_parent}:/app/keys" \
+                -v "${mnemonic_directory}:/app/mnemonic" \
                 "${deposit_cli_image}" \
                 --non_interactive --ignore_connectivity --language english \
                 generate-mnemonic \
                 --mnemonic_language=english \
-                --output_file=/app/keys/mnemonic.txt
+                "--output_file=/app/mnemonic/${mnemonic_basename}"
         fi
         chmod 600 "${mnemonic_file}"
     fi
@@ -1820,9 +2111,9 @@ function generate_validator_keys() {
             and (.min_activation_amount | type == "number" and . > 0 and . == floor and . <= 9007199)
             and (.min_deposit_amount | type == "number" and . > 0 and . == floor and . <= 9007199)
             and .min_activation_amount >= .min_deposit_amount
-        ' "${share_dir}/deposit-settings.json" >/dev/null \
-        || fail "--amount does not satisfy ${share_dir}/deposit-settings.json."
-    chain_setting="$(jq -c '.' "${share_dir}/deposit-settings.json")"
+        ' "${active_deposit_settings_file}" >/dev/null \
+        || fail "Invalid Deposit settings: ${active_deposit_settings_file}."
+    chain_setting="$(jq -c '.' "${active_deposit_settings_file}")"
     amount_multiplier="$(jq -r '.multiplier' <<<"${chain_setting}")"
     amount_divisor="$(jq -r '.divisor' <<<"${chain_setting}")"
     parse_whole_token_amount_to_gwei "--amount" "${deposit_amount}"
@@ -1863,33 +2154,20 @@ function generate_validator_keys() {
             | .min_deposit_amount = $min_deposit_amount
         ' <<<"${chain_setting}")"
 
+    color "34" "Generating ${validator_count} validator key(s) from index ${validator_start_index}."
     if [[ "${deployment_mode}" == "binary" ]]; then
-        local generation_dir
-        local generated_keys_dir
-
-        generation_dir="$(mktemp -d "${keys_parent}/deposit-output.XXXXXX")"
-        generated_keys_dir="${generation_dir}/validator_keys"
-        if ! "${bin_dir}/deposit" \
+        "${bin_dir}/deposit" \
             --non_interactive --ignore_connectivity --language english \
             existing-mnemonic \
             --mnemonic="${mnemonic}" \
             --keystore_password="${password}" \
-            --validator_start_index=0 \
+            --validator_start_index="${validator_start_index}" \
             --num_validators="${validator_count}" \
             --withdrawal_address="${withdrawal_address}" \
             --compounding \
             --amount="${cli_deposit_amount}" \
             --devnet_chain_setting="${deposit_cli_chain_setting}" \
-            "--folder=${generation_dir}"; then
-            rm -rf -- "${generation_dir}"
-            fail "EthStaker Deposit CLI failed to generate validator keys."
-        fi
-        [[ -d "${generated_keys_dir}" ]] || {
-            rm -rf -- "${generation_dir}"
-            fail "EthStaker Deposit CLI did not create validator_keys/."
-        }
-        cp -a "${generated_keys_dir}/." "${keys_dir}/"
-        rm -rf -- "${generation_dir}"
+            "--folder=${keys_parent}" || generation_status=$?
     else
         docker run --rm --tty --env TERM=xterm \
             --user "${host_uid}:${host_gid}" \
@@ -1899,26 +2177,56 @@ function generate_validator_keys() {
             existing-mnemonic \
             --mnemonic="${mnemonic}" \
             --keystore_password="${password}" \
-            --validator_start_index=0 \
+            --validator_start_index="${validator_start_index}" \
             --num_validators="${validator_count}" \
             --withdrawal_address="${withdrawal_address}" \
             --compounding \
             --amount="${cli_deposit_amount}" \
             --devnet_chain_setting="${deposit_cli_chain_setting}" \
-            --folder=/app
+            --folder=/app || generation_status=$?
     fi
 
     unset mnemonic password
-    keystore_count="$(find "${keys_dir}" -maxdepth 1 -type f -name 'keystore-*.json' | wc -l | tr -d ' ')"
-    [[ "${keystore_count}" -eq "${validator_count}" ]] || fail "Expected ${validator_count} keystores, found ${keystore_count}."
-    deposit_file="$(find "${keys_dir}" -maxdepth 1 -type f -name 'deposit_data-*.json' -print -quit)"
-    [[ -n "${deposit_file}" ]] || fail "EthStaker Deposit CLI did not create deposit data."
+    while IFS= read -r file; do
+        [[ -n "${existing_files[${file}]:-}" ]] && continue
+        new_files+=("${file}")
+        case "$(basename "${file}")" in
+            keystore-*.json) new_keystores+=("${file}") ;;
+            deposit_data-*.json) new_deposit_files+=("${file}") ;;
+        esac
+    done < <(find "${keys_dir}" -maxdepth 1 -type f -print | sort)
+
+    if (( generation_status != 0 )); then
+        [[ "${#new_files[@]}" -eq 0 ]] || rm -f -- "${new_files[@]}"
+        fail "EthStaker Deposit CLI failed; removed files from the incomplete batch."
+    fi
+    if [[ "${#new_keystores[@]}" -ne "${validator_count}" \
+        || "${#new_deposit_files[@]}" -ne 1 ]]; then
+        [[ "${#new_files[@]}" -eq 0 ]] || rm -f -- "${new_files[@]}"
+        fail "Expected ${validator_count} new keystores and one new deposit data file; removed the incomplete batch."
+    fi
+
+    for file in "${new_keystores[@]}"; do
+        pubkey="$(jq -r '.pubkey // empty' "${file}" | tr '[:upper:]' '[:lower:]')"
+        pubkey="${pubkey#0x}"
+        if [[ ! "${pubkey}" =~ ^[0-9a-f]{96}$ \
+            || -n "${existing_pubkeys[${pubkey}]:-}" \
+            || -n "${generated_pubkeys[${pubkey}]:-}" ]]; then
+            rm -f -- "${new_files[@]}"
+            fail "Generated validator index overlaps an existing pubkey; removed the new batch. Choose another --validator-start-index or --mnemonic-file."
+        fi
+        generated_pubkeys["${pubkey}"]=1
+    done
+
+    deposit_file="${new_deposit_files[0]}"
     jq -e \
         --arg chain "${chain_name}" \
         --arg fork_version "$(jq -r '.genesis_fork_version' <<<"${chain_setting}")" \
-        --argjson expected_amount "${expected_deposit_gwei}" '
+        --argjson expected_amount "${expected_deposit_gwei}" \
+        --argjson validator_count "${validator_count}" '
             type == "array"
-            and length > 0
+            and length == $validator_count
+            and ([.[].pubkey | ascii_downcase] | unique | length) == $validator_count
             and all(.[];
                 .network_name == $chain
                 and (("0x" + (.fork_version | sub("^0x"; ""))) | ascii_downcase)
@@ -1926,22 +2234,47 @@ function generate_validator_keys() {
                 and .amount == $expected_amount
             )
         ' "${deposit_file}" >/dev/null \
-        || fail "Generated deposit data does not match ${share_dir}/deposit-settings.json."
+        || {
+            rm -f -- "${new_files[@]}"
+            fail "Generated deposit data does not match ${active_deposit_settings_file}; removed the new batch."
+        }
 
-    color "32" "Generated ${keystore_count} validator keys."
+    while IFS= read -r pubkey; do
+        pubkey="${pubkey#0x}"
+        [[ -n "${generated_pubkeys[${pubkey}]:-}" ]] || {
+            rm -f -- "${new_files[@]}"
+            fail "Generated deposit data does not match the new keystores; removed the new batch."
+        }
+    done < <(jq -r '.[].pubkey | ascii_downcase' "${deposit_file}")
+
+    if [[ "${EUID}" -eq 0 && -n "${SUDO_UID:-}" ]]; then
+        chown "${host_uid}:${host_gid}" "${mnemonic_file}" "${password_file}" \
+            "${new_files[@]}"
+    fi
+
+    color "32" "Generated ${validator_count} validator keys."
+    color "32" "Mnemonic: ${mnemonic_file}"
+    color "32" "Keystore password: ${password_file}"
+    color "32" "Keystores: ${keys_dir}"
     color "32" "Deposit data: ${deposit_file}"
     color "33" "Submit the deposit data before expecting the validators to activate."
     color "31" "Never share ${mnemonic_file}, ${password_file}, or validator keystores."
 }
 
+if [[ "${generate_keys}" == true ]]; then
+    generate_validator_keys
+fi
+
+if [[ "${key_generation_only}" == true ]]; then
+    color "32" "Validator key generation completed. No node services were changed."
+    exit 0
+fi
+
 if [[ "${validator_mode}" == true ]]; then
     if validator_key_import_required; then
-        if [[ "${genesis_mode}" == true ]]; then
-            existing_keys="$(find "${keys_dir}" -maxdepth 1 -type f -name 'keystore-*.json' | wc -l | tr -d ' ')"
-            [[ "${existing_keys}" -gt 0 ]] || fail "Genesis validator mode requires existing keystores in ${keys_dir}."
-        else
-            generate_validator_keys
-        fi
+        existing_keys="$(find "${keys_dir}" -maxdepth 1 -type f -name 'keystore-*.json' | wc -l | tr -d ' ')"
+        [[ "${existing_keys}" -gt 0 ]] \
+            || fail "Validator mode requires existing keystores in ${keys_dir}; use --generate-keys to create them."
         [[ -s "${password_file}" ]] || fail "Missing validator password file: ${password_file}"
     else
         color "33" "Using the validator keys already imported in ${validator_data_dir}."

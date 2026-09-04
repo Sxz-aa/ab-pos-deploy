@@ -106,7 +106,7 @@ abcore-testnet-v1.2.3-rc.0.tar.gz.sha256
 
 The archive contains only `deposit-settings.json`. The `rc.0` workflow does
 not build or publish AB Geth. Genesis Validator Operators use this exact tag
-with `generate-abpos-validators.sh --release`.
+with `ab-pos.sh --generate-keys --release`.
 
 ### Build a Genesis Candidate
 

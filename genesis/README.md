@@ -6,19 +6,19 @@ This guide covers the pre-genesis workflow for Genesis Validator Operators, Infr
 
 | Script | Responsibility | Primary user | Lifecycle stage |
 | --- | --- | --- | --- |
-| `generate-abpos-validators.sh` | Generate genesis validator secrets, keystores, and deposit data | Genesis Validator Operator | Before genesis is built |
 | `generate-abpos-genesis.sh` | Export Deposit settings, then build and verify execution and consensus genesis files | Network Operator | Before participation and after deposit collection |
-| `ab-pos.sh` | Download a network Release and deploy Geth, a beacon node, and optionally a validator client | Node and infrastructure operators | After a Release is published |
+| `ab-pos.sh` | Generate validator material or deploy Geth, a beacon node, and optionally a Validator Client | Genesis Validator and Infrastructure Operators | Before and after Genesis |
 
 On Debian and Ubuntu, each script installs missing runtime dependencies for
 its installation or generation command.
 
-Genesis Validator Operators and Infrastructure Operators use Docker by default,
-or native binaries by passing `--binary` to `generate-abpos-validators.sh` or
-`ab-pos.sh`. Network Operators build Genesis with Docker only through
-`generate-abpos-genesis.sh`.
+Genesis Validator Operators and Infrastructure Operators use `ab-pos.sh` with
+Docker by default, or with native binaries by passing `--binary`. Network
+Operators build Genesis with Docker only through `generate-abpos-genesis.sh`.
 
-`generate-abpos-validators.sh` does not build genesis files or deploy a node. `ab-pos.sh --genesis --validator` does not generate keys; it imports the same keys that were included in the genesis validator set.
+`ab-pos.sh --generate-keys` generates validator material without starting node
+services. `--genesis` only selects Genesis synchronization; it does not decide
+whether keys are generated.
 
 ## 2. Who does what
 
@@ -133,13 +133,14 @@ publish AB Geth for `rc.0`.
 ```bash
 participation_tag="v1.0.0-rc.0"
 curl -fsSL \
-  "https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/${participation_tag}/genesis/generate-abpos-validators.sh" |
+  "https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/${participation_tag}/ab-pos.sh" |
 sudo bash -s -- \
+  testnet \
+  --generate-keys \
   --release "${participation_tag}" \
   --validator-count 1000 \
   --amount 2048000 \
-  testnet \
-  0x0000000000000000000000000000000000000000
+  --withdrawal-address 0x0000000000000000000000000000000000000000
 ```
 
 Replace the example withdrawal address before running the command.
