@@ -7,6 +7,7 @@ set -euo pipefail
 # validator keystores, node deployment, bootnode discovery, or JWT secrets.
 
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly repository_dir="$(cd "${script_dir}/.." && pwd)"
 readonly gwei_per_token=1000000000
 readonly max_exact_integer=9007199254740991
 
@@ -59,7 +60,8 @@ function convert_native_amount_to_consensus_gwei() {
 function usage() {
     cat <<'USAGE'
 Usage:
-  ./generate-abpos-genesis.sh [--config CONFIG_DIR] --prepare-deposit-settings
+  ./generate-abpos-genesis.sh [--config CONFIG_DIR] --prepare-deposit-settings [--export] [--force]
+  ./generate-abpos-genesis.sh [--config CONFIG_DIR] --export [--force]
   ./generate-abpos-genesis.sh [--config CONFIG_DIR] [--deposit-data]
   ./generate-abpos-genesis.sh [--config CONFIG_DIR] --mnemonic MNEMONIC_FILE
 
@@ -67,6 +69,9 @@ Modes:
   prepare-deposit-settings
              Write CONFIG_DIR/deposit-settings.json for Genesis Validator
              Operators without building genesis.
+  export     Copy generated public files into CHAIN_NAME/NETWORK_NAME/share.
+             Existing files must match unless --force is used; unrelated
+             network files are preserved.
   deposit-data  Build the validator set from all deposit_data-*.json files
                 under CONFIG_DIR/validator-deposits. This is the default mode.
   mnemonic   Build the validator set from one local BIP-39 mnemonic file.
@@ -89,6 +94,8 @@ USAGE
 
 genesis_mode="deposit-data"
 prepare_deposit_settings=false
+export_output=false
+force_export=false
 config_dir="${GENESIS_CONFIG_DIR:-${script_dir}/config}"
 mnemonic_file=""
 while (( "$#" > 0 )); do
@@ -104,6 +111,14 @@ while (( "$#" > 0 )); do
             ;;
         --prepare-deposit-settings)
             prepare_deposit_settings=true
+            shift
+            ;;
+        --export)
+            export_output=true
+            shift
+            ;;
+        --force)
+            force_export=true
             shift
             ;;
         --mnemonic|--legacy)
@@ -122,13 +137,20 @@ while (( "$#" > 0 )); do
     esac
 done
 
+if [[ "${export_output}" == true && -n "${mnemonic_file}" ]]; then
+    fail "--export cannot be combined with --mnemonic."
+fi
+if [[ "${force_export}" == true && "${export_output}" == false ]]; then
+    fail "--force can only be used with --export."
+fi
+
 [[ -d "${config_dir}" ]] \
     || fail "Genesis config not found: ${config_dir}. Copy genesis/config-template to genesis/config first."
 config_dir="$(cd "${config_dir}" && pwd)"
 deposits_dir="${config_dir}/validator-deposits"
 output_dir="${config_dir}/genesis-output"
 
-if [[ "${prepare_deposit_settings}" == false ]]; then
+if [[ "${prepare_deposit_settings}" == false && "${export_output}" == false ]]; then
     if [[ "${genesis_mode}" == "deposit-data" ]]; then
         [[ -d "${deposits_dir}" ]] \
             || fail "Deposit directory not found: ${deposits_dir}"
@@ -139,7 +161,7 @@ if [[ "${prepare_deposit_settings}" == false ]]; then
     fi
 fi
 
-readonly genesis_mode prepare_deposit_settings config_dir deposits_dir mnemonic_file output_dir
+readonly genesis_mode prepare_deposit_settings export_output force_export config_dir deposits_dir mnemonic_file output_dir
 readonly requested_validator_count="${EXPECTED_VALIDATOR_COUNT:-}"
 readonly requested_genesis_timestamp="${GENESIS_TIMESTAMP:-}"
 readonly generator_image="${GENESIS_GENERATOR_IMAGE:-ethpandaops/ethereum-genesis-generator:6.1.6}"
@@ -157,8 +179,11 @@ readonly requested_chain_name="${CHAIN_NAME:-}"
 readonly requested_network_name="${NETWORK_NAME:-}"
 
 required_commands=(jq awk)
-if [[ "${prepare_deposit_settings}" == false ]]; then
+if [[ "${prepare_deposit_settings}" == false && "${export_output}" == false ]]; then
     required_commands+=(docker sort diff)
+fi
+if [[ "${export_output}" == true ]]; then
+    required_commands+=(cmp find install sort)
 fi
 for command_name in "${required_commands[@]}"; do
     command -v "${command_name}" >/dev/null 2>&1 \
@@ -194,7 +219,7 @@ readonly min_activation_amount="${requested_min_activation_amount:-${MIN_ACTIVAT
 readonly max_deposit_amount="${requested_max_deposit_amount:-${MAX_DEPOSIT_AMOUNT:-}}"
 readonly validator_balance="${requested_validator_balance:-${VALIDATOR_BALANCE:-}}"
 readonly premine_address="${requested_premine_address:-${EL_PREMINE_ADDRESS:-0x161f5Ef2C0c1Be307CFeF2E7b1411E352a3Be01B}}"
-readonly base_fee_per_gas="${requested_base_fee_per_gas:-${EL_BASE_FEE_PER_GAS:-0x2D79883D2000}}"
+readonly base_fee_per_gas="${requested_base_fee_per_gas:-${EL_BASE_FEE_PER_GAS:-50000000000000}}"
 readonly config_name="${requested_config_name:-${CONFIG_NAME:-${chain_name}-${network_name}}}"
 
 genesis_mnemonic=""
@@ -230,8 +255,9 @@ require_safe_positive_integer "DEPOSIT_AMOUNT_MULTIPLIER" "${deposit_amount_mult
 require_safe_positive_integer "DEPOSIT_AMOUNT_DIVISOR" "${deposit_amount_divisor}"
 [[ "${premine_address}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
     || fail "EL_PREMINE_ADDRESS is invalid: ${premine_address}"
-[[ "${base_fee_per_gas}" =~ ^0x[0-9a-fA-F]+$ ]] \
-    || fail "EL_BASE_FEE_PER_GAS must be a hexadecimal quantity."
+require_safe_positive_integer "EL_BASE_FEE_PER_GAS" "${base_fee_per_gas}"
+printf -v base_fee_per_gas_hex '0x%x' "${base_fee_per_gas}"
+readonly base_fee_per_gas_hex
 [[ "${chain_name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
     || fail "CHAIN_NAME is invalid: ${chain_name}"
 [[ "${network_name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
@@ -287,16 +313,88 @@ function write_deposit_settings() {
         }' > "${destination}"
 }
 
+function create_participation_settings() {
+    local destination="${config_dir}/deposit-settings.json"
+    local zero_validators_root="0x0000000000000000000000000000000000000000000000000000000000000000"
+
+    write_deposit_settings "${destination}" "${zero_validators_root}"
+    printf 'Created Genesis participation settings: %s\n' "${destination}"
+    cat "${destination}"
+}
+
+function export_files() {
+    local description="$1"
+    local create_node_lists="$2"
+    local share_dir="${repository_dir}/${chain_name}/${network_name}/share"
+    local source_file
+    local target_file
+    local file_name
+    local node_list
+    shift 2
+
+    (( "$#" > 0 )) || fail "No ${description} files are available to export."
+    [[ ! -e "${share_dir}" || -d "${share_dir}" ]] \
+        || fail "Export target is not a directory: ${share_dir}"
+
+    for source_file in "$@"; do
+        [[ -f "${source_file}" && -s "${source_file}" ]] \
+            || fail "Generated file is missing or empty: ${source_file}"
+        file_name="$(basename "${source_file}")"
+        target_file="${share_dir}/${file_name}"
+        if [[ -e "${target_file}" ]] && ! cmp -s "${source_file}" "${target_file}"; then
+            [[ "${force_export}" == true ]] \
+                || fail "Export target differs: ${target_file}. Review it, then rerun with --force to replace it."
+        fi
+    done
+
+    mkdir -p "${share_dir}"
+    for source_file in "$@"; do
+        file_name="$(basename "${source_file}")"
+        target_file="${share_dir}/${file_name}"
+        if [[ ! -e "${target_file}" ]] || ! cmp -s "${source_file}" "${target_file}"; then
+            install -m 644 "${source_file}" "${target_file}"
+        fi
+    done
+
+    if [[ "${create_node_lists}" == true ]]; then
+        for node_list in \
+            bootstrap_nodes.txt \
+            bootstrap_nodes_execution.txt \
+            checkpoint_sync_urls.txt; do
+            [[ -e "${share_dir}/${node_list}" ]] \
+                || install -m 644 /dev/null "${share_dir}/${node_list}"
+        done
+    fi
+
+    printf 'Exported %s to: %s\n' "${description}" "${share_dir}"
+}
+
 if [[ "${prepare_deposit_settings}" == true ]]; then
-    readonly zero_validators_root="0x0000000000000000000000000000000000000000000000000000000000000000"
-    write_deposit_settings "${config_dir}/deposit-settings.json" "${zero_validators_root}"
-    printf 'Created Genesis participation settings: %s\n' "${config_dir}/deposit-settings.json"
+    create_participation_settings
+    if [[ "${export_output}" == true ]]; then
+        export_files \
+            "Genesis participation settings" \
+            false \
+            "${config_dir}/deposit-settings.json"
+    fi
     exit 0
 fi
+
+if [[ "${export_output}" == true ]]; then
+    [[ -d "${output_dir}" ]] \
+        || fail "Genesis output directory not found: ${output_dir}"
+    mapfile -d '' -t generated_files < <(
+        find "${output_dir}" -mindepth 1 -maxdepth 1 -type f -print0 | sort -z
+    )
+    export_files "Genesis output" true "${generated_files[@]}"
+    exit 0
+fi
+
 if [[ "${genesis_mode}" == "deposit-data" ]]; then
     participation_settings="${config_dir}/deposit-settings.json"
-    [[ -s "${participation_settings}" ]] \
-        || fail "Genesis participation settings are missing. Run --prepare-deposit-settings first."
+    if [[ ! -s "${participation_settings}" ]]; then
+        create_participation_settings
+    fi
     jq -e \
         --arg chain "${chain_name}" \
         --arg genesis_fork_version "${GENESIS_FORK_VERSION}" \
@@ -385,7 +483,7 @@ function prepare_genesis_deposits() {
     local withdrawal_credentials
     local amount
     local fork_version
-    local network_name
+    local deposit_network_name
     local normalized_pubkey
     local expected_fork_clean="${genesis_fork_version#0x}"
     local unique_records
@@ -407,7 +505,8 @@ function prepare_genesis_deposits() {
         jq -e 'type == "array" and length > 0' "${deposit_file}" >/dev/null \
             || fail "Deposit file must be a non-empty JSON array: ${deposit_file}"
 
-        while IFS=$'\t' read -r pubkey withdrawal_credentials amount fork_version network_name; do
+        while IFS=$'\t' read -r \
+            pubkey withdrawal_credentials amount fork_version deposit_network_name; do
             pubkey="${pubkey#0x}"
             withdrawal_credentials="${withdrawal_credentials#0x}"
             fork_version="${fork_version#0x}"
@@ -423,8 +522,8 @@ function prepare_genesis_deposits() {
                 || fail "Deposit amount is outside the accepted range for ${pubkey}: ${amount}"
             [[ "${fork_version,,}" == "${expected_fork_clean,,}" ]] \
                 || fail "Fork version mismatch for ${pubkey}: expected ${genesis_fork_version}, got ${fork_version}"
-            [[ "${network_name}" == "${expected_deposit_network_name}" ]] \
-                || fail "Network name mismatch for ${pubkey}: expected ${expected_deposit_network_name}, got ${network_name}"
+            [[ "${deposit_network_name}" == "${expected_deposit_network_name}" ]] \
+                || fail "Network name mismatch for ${pubkey}: expected ${expected_deposit_network_name}, got ${deposit_network_name}"
 
             normalized_pubkey="0x${pubkey,,}"
             printf '%s\n' "${normalized_pubkey}" >> "${pubkeys_file}"
@@ -517,7 +616,7 @@ premine_key="$(
     || fail "EL premine address is absent from the generated execution genesis: ${premine_address}"
 
 jq \
-    --arg base_fee_per_gas "${base_fee_per_gas}" '
+    --arg base_fee_per_gas "${base_fee_per_gas_hex}" '
         .baseFeePerGas = $base_fee_per_gas |
         .alloc |= with_entries(
             select(
@@ -531,7 +630,7 @@ mv -f -- "${runtime_genesis}.tmp" "${runtime_genesis}"
     || fail "Generated execution genesis timestamp is incorrect."
 [[ "$(jq -r --arg key "${premine_key}" '.alloc[$key].balance' "${runtime_genesis}")" == "${premine_wei}" ]] \
     || fail "Generated execution genesis premine is incorrect."
-[[ "$(jq -r '.baseFeePerGas' "${runtime_genesis}")" == "${base_fee_per_gas}" ]] \
+[[ "$(jq -r '.baseFeePerGas' "${runtime_genesis}")" == "${base_fee_per_gas_hex}" ]] \
     || fail "Failed to set the execution genesis base fee."
 [[ "$(jq '[.alloc | keys[] | select(ascii_downcase | test("^0x0{38}[0-9a-f]{2}$"))] | length' "${runtime_genesis}")" -eq 0 ]] \
     || fail "Failed to remove reserved low-address allocations from the execution genesis."

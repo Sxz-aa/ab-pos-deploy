@@ -66,25 +66,6 @@ Genesis workspace and exports the public Deposit settings:
 ```bash
 cp -a genesis/config-template genesis/config
 vi genesis/config/values.env
-
-./genesis/generate-abpos-genesis.sh --prepare-deposit-settings
-```
-
-This creates `genesis/config/deposit-settings.json`. The initial file contains a zero
-`genesis_validator_root` because the Genesis state does not exist yet; that
-field does not participate in Deposit Data signing.
-
-```json
-{
-  "network_name": "abcore",
-  "genesis_fork_version": "0x000001ab",
-  "exit_fork_version": "0x030001ab",
-  "genesis_validator_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
-  "multiplier": 1,
-  "divisor": 1000,
-  "min_activation_amount": 32000,
-  "min_deposit_amount": 1000
-}
 ```
 
 The settings are derived from the reviewed `values.env`:
@@ -108,15 +89,20 @@ the opposite direction.
 `VALIDATOR_BALANCE`, and `TARGET_TOTAL_SUPPLY` are whole native-token amounts.
 Gwei is used only internally and in Deposit Data.
 
-Copy the settings into the network `share` directory and publish the
-settings-only `rc.0` Pre-release:
+```bash
+./genesis/generate-abpos-genesis.sh --prepare-deposit-settings --export
+```
+
+The command writes `genesis/config/deposit-settings.json` and displays its path
+and contents, then exports it to `<chain>/<network>/share`. The initial file
+contains a zero `genesis_validator_root` because the Genesis state does not
+exist yet; that field does not participate in Deposit Data signing.
+
+Publish the settings-only `rc.0` Pre-release:
 
 ```bash
 source genesis/config/values.env
 share_dir="${CHAIN_NAME}/${NETWORK_NAME}/share"
-mkdir -p "${share_dir}"
-cp genesis/config/deposit-settings.json "${share_dir}/deposit-settings.json"
-
 participation_tag="v1.0.0-rc.0"
 git add "${share_dir}/deposit-settings.json"
 git commit -S -m "config: prepare ${CHAIN_NAME}/${NETWORK_NAME} Genesis participation"
@@ -270,23 +256,18 @@ The builder validates the deposit records and writes the public files to
 actual `genesis_validator_root` and is included in the Network Release. Review
 the generated files before continuing.
 
-Copy the output to the chain and network selected in `values.env`, then create empty node lists for the Candidate:
+Export the reviewed output to the chain and network selected in `values.env`.
+The command compares existing files before copying them and preserves node
+lists already present in the target directory. Use `--force` only after
+reviewing an expected difference.
 
 ```bash
+./genesis/generate-abpos-genesis.sh --export
+
 source genesis/config/values.env
 chain="${CHAIN_NAME}"
 network="${NETWORK_NAME}"
-[[ "${CONFIG_NAME}" == "${chain}-${network}" ]] \
-  || { echo "CONFIG_NAME must be ${chain}-${network}" >&2; exit 1; }
-
 share_dir="${chain}/${network}/share"
-mkdir -p "${share_dir}"
-cp -a genesis/config/genesis-output/. "${share_dir}/"
-touch \
-  "${share_dir}/bootstrap_nodes.txt" \
-  "${share_dir}/bootstrap_nodes_execution.txt" \
-  "${share_dir}/checkpoint_sync_urls.txt"
-
 candidate_tag="v1.0.0-rc.1"
 ```
 
