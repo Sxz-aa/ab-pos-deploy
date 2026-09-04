@@ -20,51 +20,104 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      - name: Validate Release tag
+        id: release
+        run: |
+          set -Eeuo pipefail
+          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.0$ ]]; then
+            kind=participation
+            prerelease=true
+          elif [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]]; then
+            kind=candidate
+            prerelease=true
+          elif [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            kind=release
+            prerelease=false
+          else
+            printf 'ERROR: tag must be vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.NUMBER.\n' >&2
+            exit 1
+          fi
+          printf 'kind=%s\n' "${kind}" >>"${GITHUB_OUTPUT}"
+          printf 'prerelease=%s\n' "${prerelease}" >>"${GITHUB_OUTPUT}"
+
       - name: Log in to GitHub Container Registry
+        if: steps.release.outputs.kind != 'participation'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Validate Release tag
-        id: release
+      - name: Build Genesis Participation artifacts
+        if: steps.release.outputs.kind == 'participation'
         run: |
           set -Eeuo pipefail
-          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]]; then
-            prerelease=true
-          elif [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            prerelease=false
-          else
-            printf 'ERROR: tag must be vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.NUMBER.\n' >&2
-            exit 1
-          fi
-          printf 'prerelease=%s\n' "${prerelease}" >>"${GITHUB_OUTPUT}"
+          mkdir -p build
+          found_settings=false
+          zero_root="0x0000000000000000000000000000000000000000000000000000000000000000"
+          for settings_path in */*/share/deposit-settings.json; do
+            [[ -f "${settings_path}" ]] || continue
+            settings_root="$(jq -r '.devnet_chain_setting.genesis_validator_root // empty' "${settings_path}")"
+            [[ "${settings_root}" == "${zero_root}" ]] || continue
+            found_settings=true
+            chain="$(basename "$(dirname "$(dirname "$(dirname "${settings_path}")")")")"
+            network="$(basename "$(dirname "$(dirname "${settings_path}")")")"
+            jq -e \
+              --arg chain "${chain}" \
+              --arg network "${network}" \
+              --arg zero_root "${zero_root}" '
+                type == "object"
+                and .chain == $chain
+                and .network == $network
+                and (.deposit_amount | type == "number" and . > 0)
+                and (.devnet_chain_setting | type == "object")
+                and .devnet_chain_setting.network_name == $chain
+                and (.devnet_chain_setting.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+                and (.devnet_chain_setting.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+                and .devnet_chain_setting.genesis_validator_root == $zero_root
+                and (.devnet_chain_setting.multiplier | type == "number" and . > 0)
+                and (.devnet_chain_setting.min_activation_amount | type == "number" and . > 0)
+                and (.devnet_chain_setting.min_deposit_amount | type == "number" and . > 0)
+                and .deposit_amount >= .devnet_chain_setting.min_activation_amount
+                and .devnet_chain_setting.min_activation_amount >= .devnet_chain_setting.min_deposit_amount
+              ' "${settings_path}" >/dev/null
+            archive="build/${chain}-${network}-${GITHUB_REF_NAME}.tar.gz"
+            tar -C "$(dirname "${settings_path}")" -czf "${archive}" deposit-settings.json
+            (
+              cd build
+              sha256sum "$(basename "${archive}")" >"$(basename "${archive}").sha256"
+            )
+          done
+          [[ "${found_settings}" == "true" ]] \
+            || { printf 'ERROR: no zero-root Genesis Participation settings were found.\n' >&2; exit 1; }
 
       - name: Build network artifacts
+        if: steps.release.outputs.kind != 'participation'
         run: |
           set -Eeuo pipefail
-          if [[ "${{ steps.release.outputs.prerelease }}" == "true" ]]; then
+          if [[ "${{ steps.release.outputs.kind }}" == "candidate" ]]; then
             release_phase=candidate
           else
             release_phase=release
           fi
           found_network=false
-          for share_dir in abpos/*/share; do
+          for share_dir in */*/share; do
             [[ -s "${share_dir}/genesis.json" ]] || continue
             found_network=true
+            chain="$(basename "$(dirname "$(dirname "${share_dir}")")")"
             network="$(basename "$(dirname "${share_dir}")")"
             make network \
+              CHAIN="${chain}" \
               NETWORK="${network}" \
               VERSION="${GITHUB_REF_NAME}" \
               RELEASE_PHASE="${release_phase}"
-            printf '%s\n' "${network}" >>build/release-networks.txt
+            printf '%s\t%s\n' "${chain}" "${network}" >>build/release-targets.tsv
           done
           [[ "${found_network}" == "true" ]] \
             || { printf 'ERROR: no populated network share directory was found.\n' >&2; exit 1; }
 
       - name: Compare with matching Candidate when available
-        if: steps.release.outputs.prerelease == 'false'
+        if: steps.release.outputs.kind == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -90,12 +143,12 @@ jobs:
           fi
           candidate_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${candidate_tag}")"
           mkdir -p build/candidate
-          while IFS= read -r network; do
-            candidate_asset="abpos-${network}-${candidate_tag}.tar.gz"
+          while IFS=$'\t' read -r chain network; do
+            candidate_asset="${chain}-${network}-${candidate_tag}.tar.gz"
             if ! jq -e --arg name "${candidate_asset}" \
               'any(.assets[]; .name == $name)' <<<"${candidate_json}" >/dev/null; then
-              printf 'Candidate %s has no %s asset; skipping its comparison.\n' \
-                "${candidate_tag}" "${network}"
+              printf 'Candidate %s has no %s/%s asset; skipping its comparison.\n' \
+                "${candidate_tag}" "${chain}" "${network}"
               continue
             fi
             gh release download "${candidate_tag}" \
@@ -104,16 +157,30 @@ jobs:
               --dir build/candidate
             ./scripts/verify-genesis-candidate.sh \
               "build/candidate/${candidate_asset}" \
-              "build/abpos-${network}-${GITHUB_REF_NAME}.tar.gz"
-          done <build/release-networks.txt
+              "build/${chain}-${network}-${GITHUB_REF_NAME}.tar.gz"
+          done <build/release-targets.tsv
 
       - name: Prepare AB Geth release artifacts
+        if: steps.release.outputs.kind != 'participation'
         env:
           GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
         run: |
           ./scripts/prepare-geth-release.sh
 
+      - name: Publish Genesis Participation Pre-release
+        if: steps.release.outputs.kind == 'participation'
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: false
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
+          files: |
+            build/*.tar.gz
+            build/*.tar.gz.sha256
+
       - name: Publish versioned GitHub Release
+        if: steps.release.outputs.kind != 'participation'
         uses: softprops/action-gh-release@v3
         with:
           draft: false
@@ -121,6 +188,6 @@ jobs:
           make_latest: false
           fail_on_unmatched_files: true
           files: |
-            build/abpos-*.tar.gz
-            build/abpos-*.tar.gz.sha256
+            build/*.tar.gz
+            build/*.tar.gz.sha256
             build/ab-geth-*

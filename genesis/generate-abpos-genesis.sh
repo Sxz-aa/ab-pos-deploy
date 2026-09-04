@@ -16,10 +16,14 @@ function fail() {
 function usage() {
     cat <<'USAGE'
 Usage:
+  ./generate-abpos-genesis.sh [--config CONFIG_DIR] --prepare-deposit-settings
   ./generate-abpos-genesis.sh [--config CONFIG_DIR] [--deposit-data]
   ./generate-abpos-genesis.sh [--config CONFIG_DIR] --mnemonic MNEMONIC_FILE
 
 Modes:
+  prepare-deposit-settings
+             Write CONFIG_DIR/deposit-settings.json for Genesis Validator
+             Operators without building genesis.
   deposit-data  Build the validator set from all deposit_data-*.json files
                 under CONFIG_DIR/validator-deposits. This is the default mode.
   mnemonic   Build the validator set from one local BIP-39 mnemonic file.
@@ -41,6 +45,7 @@ USAGE
 }
 
 genesis_mode="deposit-data"
+prepare_deposit_settings=false
 config_dir="${GENESIS_CONFIG_DIR:-${script_dir}/config}"
 mnemonic_file=""
 while (( "$#" > 0 )); do
@@ -52,6 +57,10 @@ while (( "$#" > 0 )); do
             ;;
         --deposit-data)
             genesis_mode="deposit-data"
+            shift
+            ;;
+        --prepare-deposit-settings)
+            prepare_deposit_settings=true
             shift
             ;;
         --mnemonic|--legacy)
@@ -76,29 +85,38 @@ config_dir="$(cd "${config_dir}" && pwd)"
 deposits_dir="${config_dir}/validator-deposits"
 output_dir="${config_dir}/genesis-output"
 
-if [[ "${genesis_mode}" == "deposit-data" ]]; then
-    [[ -d "${deposits_dir}" ]] \
-        || fail "Deposit directory not found: ${deposits_dir}"
-else
-    [[ -f "${mnemonic_file}" && -s "${mnemonic_file}" ]] \
-        || fail "Mnemonic file not found or empty: ${mnemonic_file}"
-    mnemonic_file="$(cd "$(dirname "${mnemonic_file}")" && pwd)/$(basename "${mnemonic_file}")"
+if [[ "${prepare_deposit_settings}" == false ]]; then
+    if [[ "${genesis_mode}" == "deposit-data" ]]; then
+        [[ -d "${deposits_dir}" ]] \
+            || fail "Deposit directory not found: ${deposits_dir}"
+    else
+        [[ -f "${mnemonic_file}" && -s "${mnemonic_file}" ]] \
+            || fail "Mnemonic file not found or empty: ${mnemonic_file}"
+        mnemonic_file="$(cd "$(dirname "${mnemonic_file}")" && pwd)/$(basename "${mnemonic_file}")"
+    fi
 fi
 
-readonly genesis_mode config_dir deposits_dir mnemonic_file output_dir
+readonly genesis_mode prepare_deposit_settings config_dir deposits_dir mnemonic_file output_dir
 readonly requested_validator_count="${EXPECTED_VALIDATOR_COUNT:-}"
 readonly requested_genesis_timestamp="${GENESIS_TIMESTAMP:-}"
 readonly generator_image="${GENESIS_GENERATOR_IMAGE:-ethpandaops/ethereum-genesis-generator:6.1.6}"
 readonly requested_target_total_supply="${TARGET_TOTAL_SUPPLY:-}"
-readonly requested_multiplier="${MULTIPLIER:-}"
+readonly requested_supply_multiplier="${SUPPLY_MULTIPLIER:-}"
+readonly requested_deposit_cli_multiplier="${DEPOSIT_CLI_MULTIPLIER:-}"
+readonly requested_min_deposit_amount="${MIN_DEPOSIT_AMOUNT:-}"
 readonly requested_premine_address="${EL_PREMINE_ADDRESS:-}"
 readonly requested_base_fee_per_gas="${EL_BASE_FEE_PER_GAS:-}"
 readonly requested_config_name="${GENESIS_CONFIG_NAME:-}"
+readonly requested_chain_name="${CHAIN_NAME:-}"
 readonly requested_network_name="${NETWORK_NAME:-}"
 readonly requested_min_validator_gwei="${MIN_VALIDATOR_GWEI:-}"
 readonly requested_max_validator_gwei="${MAX_VALIDATOR_GWEI:-}"
 
-for command_name in docker jq awk sort diff; do
+required_commands=(jq awk)
+if [[ "${prepare_deposit_settings}" == false ]]; then
+    required_commands+=(docker sort diff)
+fi
+for command_name in "${required_commands[@]}"; do
     command -v "${command_name}" >/dev/null 2>&1 \
         || fail "Required command not found: ${command_name}"
 done
@@ -121,14 +139,18 @@ if [[ "${configured_genesis_timestamp}" == "0" ]]; then
     configured_genesis_timestamp="$(( $(date +%s) + 300 ))"
 fi
 readonly genesis_timestamp="${configured_genesis_timestamp}"
-readonly expected_network_name="${requested_network_name:-${NETWORK_NAME:-abcore}}"
+readonly chain_name="${requested_chain_name:-${CHAIN_NAME:-abcore}}"
+readonly network_name="${requested_network_name:-${NETWORK_NAME:-testnet}}"
+readonly expected_deposit_network_name="${chain_name}"
 readonly min_validator_gwei="${requested_min_validator_gwei:-${MIN_VALIDATOR_GWEI:-32000000000}}"
 readonly max_validator_gwei="${requested_max_validator_gwei:-${MAX_VALIDATOR_GWEI:-2048000000000}}"
 readonly target_total_supply="${requested_target_total_supply:-${TARGET_TOTAL_SUPPLY:-}}"
-readonly multiplier="${requested_multiplier:-${MULTIPLIER:-}}"
+readonly supply_multiplier="${requested_supply_multiplier:-${SUPPLY_MULTIPLIER:-}}"
+readonly deposit_cli_multiplier="${requested_deposit_cli_multiplier:-${DEPOSIT_CLI_MULTIPLIER:-1}}"
+readonly min_deposit_amount="${requested_min_deposit_amount:-${MIN_DEPOSIT_AMOUNT:-1}}"
 readonly premine_address="${requested_premine_address:-${EL_PREMINE_ADDRESS:-0x161f5Ef2C0c1Be307CFeF2E7b1411E352a3Be01B}}"
 readonly base_fee_per_gas="${requested_base_fee_per_gas:-${EL_BASE_FEE_PER_GAS:-0x2D79883D2000}}"
-readonly config_name="${requested_config_name:-${CONFIG_NAME:-testnet}}"
+readonly config_name="${requested_config_name:-${CONFIG_NAME:-${chain_name}-${network_name}}}"
 
 genesis_mnemonic=""
 if [[ "${genesis_mode}" == "mnemonic" ]]; then
@@ -165,20 +187,114 @@ readonly genesis_mnemonic
 
 [[ "${target_total_supply}" =~ ^[1-9][0-9]*$ ]] \
     || fail "TARGET_TOTAL_SUPPLY must be a positive integer."
-[[ "${multiplier}" =~ ^[1-9][0-9]*$ ]] \
-    || fail "MULTIPLIER must be a positive integer."
+[[ "${supply_multiplier}" =~ ^[1-9][0-9]*$ ]] \
+    || fail "SUPPLY_MULTIPLIER must be a positive integer."
+[[ "${deposit_cli_multiplier}" =~ ^[1-9][0-9]*$ ]] \
+    || fail "DEPOSIT_CLI_MULTIPLIER must be a positive integer."
+[[ "${min_deposit_amount}" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] \
+    || fail "MIN_DEPOSIT_AMOUNT must be a non-negative number."
 [[ "${premine_address}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
     || fail "EL_PREMINE_ADDRESS is invalid: ${premine_address}"
 [[ "${base_fee_per_gas}" =~ ^0x[0-9a-fA-F]+$ ]] \
     || fail "EL_BASE_FEE_PER_GAS must be a hexadecimal quantity."
+[[ "${chain_name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
+    || fail "CHAIN_NAME is invalid: ${chain_name}"
+[[ "${network_name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
+    || fail "NETWORK_NAME is invalid: ${network_name}"
 [[ "${config_name}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] \
     || fail "GENESIS_CONFIG_NAME is invalid: ${config_name}"
+[[ "${config_name}" == "${chain_name}-${network_name}" ]] \
+    || fail "CONFIG_NAME must equal CHAIN_NAME-NETWORK_NAME (${chain_name}-${network_name})."
 [[ "${GENESIS_FORK_VERSION:-}" =~ ^0x[0-9a-fA-F]{8}$ ]] \
     || fail "GENESIS_FORK_VERSION is invalid in ${config_dir}/values.env."
+[[ "${CAPELLA_FORK_VERSION:-}" =~ ^0x[0-9a-fA-F]{8}$ ]] \
+    || fail "CAPELLA_FORK_VERSION is invalid in ${config_dir}/values.env."
 [[ "${DEPOSIT_CONTRACT_ADDRESS:-}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
     || fail "DEPOSIT_CONTRACT_ADDRESS is invalid in ${config_dir}/values.env."
 [[ "${VALIDATOR_BALANCE_GWEI:-}" =~ ^[1-9][0-9]*$ ]] \
     || fail "VALIDATOR_BALANCE_GWEI must be a positive integer in ${config_dir}/values.env."
+deposit_amount="$(jq -nr \
+    --argjson amount_gwei "${VALIDATOR_BALANCE_GWEI}" \
+    --argjson multiplier "${deposit_cli_multiplier}" \
+    '$amount_gwei / 1000000000 / $multiplier')"
+min_activation_amount="$(jq -nr \
+    --argjson amount_gwei "${min_validator_gwei}" \
+    --argjson multiplier "${deposit_cli_multiplier}" \
+    '$amount_gwei / 1000000000 / $multiplier')"
+readonly deposit_amount min_activation_amount
+jq -en \
+    --argjson deposit_amount "${deposit_amount}" \
+    --argjson min_activation_amount "${min_activation_amount}" \
+    --argjson min_deposit_amount "${min_deposit_amount}" \
+    '$deposit_amount >= $min_activation_amount
+        and $min_activation_amount >= $min_deposit_amount
+        and $min_deposit_amount > 0' >/dev/null \
+    || fail "Deposit amount settings are inconsistent."
+
+function write_deposit_settings() {
+    local destination="$1"
+    local validators_root="$2"
+
+    jq -n \
+        --arg chain "${chain_name}" \
+        --arg network "${network_name}" \
+        --argjson deposit_amount "${deposit_amount}" \
+        --arg genesis_fork_version "${GENESIS_FORK_VERSION}" \
+        --arg exit_fork_version "${CAPELLA_FORK_VERSION}" \
+        --arg genesis_validator_root "${validators_root}" \
+        --argjson multiplier "${deposit_cli_multiplier}" \
+        --argjson min_activation_amount "${min_activation_amount}" \
+        --argjson min_deposit_amount "${min_deposit_amount}" \
+        '{
+            chain: $chain,
+            network: $network,
+            deposit_amount: $deposit_amount,
+            devnet_chain_setting: {
+                network_name: $chain,
+                genesis_fork_version: $genesis_fork_version,
+                exit_fork_version: $exit_fork_version,
+                genesis_validator_root: $genesis_validator_root,
+                multiplier: $multiplier,
+                min_activation_amount: $min_activation_amount,
+                min_deposit_amount: $min_deposit_amount
+            }
+        }' > "${destination}"
+}
+
+if [[ "${prepare_deposit_settings}" == true ]]; then
+    readonly zero_validators_root="0x0000000000000000000000000000000000000000000000000000000000000000"
+    write_deposit_settings "${config_dir}/deposit-settings.json" "${zero_validators_root}"
+    printf 'Created Genesis participation settings: %s\n' "${config_dir}/deposit-settings.json"
+    exit 0
+fi
+if [[ "${genesis_mode}" == "deposit-data" ]]; then
+    participation_settings="${config_dir}/deposit-settings.json"
+    [[ -s "${participation_settings}" ]] \
+        || fail "Genesis participation settings are missing. Run --prepare-deposit-settings first."
+    jq -e \
+        --arg chain "${chain_name}" \
+        --arg network "${network_name}" \
+        --argjson deposit_amount "${deposit_amount}" \
+        --arg genesis_fork_version "${GENESIS_FORK_VERSION}" \
+        --arg exit_fork_version "${CAPELLA_FORK_VERSION}" \
+        --argjson multiplier "${deposit_cli_multiplier}" \
+        --argjson min_activation_amount "${min_activation_amount}" \
+        --argjson min_deposit_amount "${min_deposit_amount}" '
+            .chain == $chain
+            and .network == $network
+            and .deposit_amount == $deposit_amount
+            and .devnet_chain_setting == {
+                network_name: $chain,
+                genesis_fork_version: $genesis_fork_version,
+                exit_fork_version: $exit_fork_version,
+                genesis_validator_root: "0x0000000000000000000000000000000000000000000000000000000000000000",
+                multiplier: $multiplier,
+                min_activation_amount: $min_activation_amount,
+                min_deposit_amount: $min_deposit_amount
+            }
+        ' "${participation_settings}" >/dev/null \
+        || fail "values.env no longer matches the published Genesis participation settings."
+fi
 if [[ "${genesis_mode}" == "mnemonic" ]]; then
     [[ "${WITHDRAWAL_ADDRESS:-}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
         || fail "WITHDRAWAL_ADDRESS is invalid in ${config_dir}/values.env."
@@ -230,6 +346,14 @@ else
 fi
 
 readonly genesis_fork_version="${GENESIS_FORK_VERSION}"
+readonly expected_deposit_gwei="$(jq -nr \
+    --argjson amount "${deposit_amount}" \
+    --argjson multiplier "${deposit_cli_multiplier}" \
+    '$amount * $multiplier * 1000000000')"
+[[ "${expected_deposit_gwei}" =~ ^[1-9][0-9]*$ ]] \
+    || fail "Deposit settings do not produce a whole positive Gwei amount."
+[[ "${expected_deposit_gwei}" == "${VALIDATOR_BALANCE_GWEI}" ]] \
+    || fail "Deposit settings do not match VALIDATOR_BALANCE_GWEI."
 
 printf 'Genesis validator source: %s\n' "${genesis_mode}"
 
@@ -274,10 +398,12 @@ function prepare_genesis_deposits() {
                 || fail "Invalid deposit amount in ${deposit_file} for ${pubkey}: ${amount}"
             (( amount >= min_validator_gwei && amount <= max_validator_gwei )) \
                 || fail "Deposit amount is outside the accepted range for ${pubkey}: ${amount}"
+            [[ "${amount}" == "${expected_deposit_gwei}" ]] \
+                || fail "Deposit amount mismatch for ${pubkey}: expected ${expected_deposit_gwei}, got ${amount}"
             [[ "${fork_version,,}" == "${expected_fork_clean,,}" ]] \
                 || fail "Fork version mismatch for ${pubkey}: expected ${genesis_fork_version}, got ${fork_version}"
-            [[ "${network_name}" == "${expected_network_name}" ]] \
-                || fail "Network name mismatch for ${pubkey}: expected ${expected_network_name}, got ${network_name}"
+            [[ "${network_name}" == "${expected_deposit_network_name}" ]] \
+                || fail "Network name mismatch for ${pubkey}: expected ${expected_deposit_network_name}, got ${network_name}"
 
             normalized_pubkey="0x${pubkey,,}"
             printf '%s\n' "${normalized_pubkey}" >> "${pubkeys_file}"
@@ -323,7 +449,7 @@ fi
     || fail "Total validator stake must be a whole number of ETH."
 
 total_staked_eth=$((total_staked_gwei / 1000000000))
-total_staked_supply=$((total_staked_eth * multiplier))
+total_staked_supply=$((total_staked_eth * supply_multiplier))
 premine_supply=$((target_total_supply - total_staked_supply))
 (( premine_supply > 0 )) || fail "Calculated execution-layer premine is not positive."
 premine_wei="${premine_supply}000000000000000000"
@@ -465,8 +591,12 @@ install -m 644 "${runtime_metadata_dir}/deposit_contract_block.txt" "${output_di
 printf '%s\n' "${deposit_contract_address}" > "${output_dir}/deposit_contract.txt"
 printf '%s\n' "${deposit_block_hash}" > "${output_dir}/deposit_contract_block_hash.txt"
 printf '%s\n' "${genesis_validators_root}" > "${output_dir}/genesis_validators_root.txt"
+write_deposit_settings "${output_dir}/deposit-settings.json" "${genesis_validators_root}"
 
 printf 'Generated AB PoS genesis files in %s\n' "${output_dir}"
+printf 'Chain: %s\n' "${chain_name}"
+printf 'Network: %s\n' "${network_name}"
+printf 'Consensus config: %s\n' "${config_name}"
 printf 'Validator source: %s\n' "${genesis_mode}"
 printf 'Validators: %s\n' "${generated_count}"
 printf 'Total stake (Gwei): %s\n' "${total_staked_gwei}"

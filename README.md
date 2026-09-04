@@ -36,6 +36,9 @@ Download the deployment script:
 curl -fsSLO https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/main/ab-pos.sh
 ```
 
+The examples use the default `abcore` chain. Specify another chain before the
+network name, for example `sudo bash ab-pos.sh abapp1 testnet prysm geth`.
+
 ### 3.1 RPC node
 
 Deploy Geth with Prysm:
@@ -86,7 +89,7 @@ Replace every example address before running either command.
 The default key locations are:
 
 ```text
-/data/abpos/testnet/
+/data/abcore/testnet/
 |-- mnemonic.txt
 |-- pwd.txt
 `-- validator-keys/
@@ -114,9 +117,9 @@ Add `--binary` to any node command to download and run native client binaries in
 sudo bash ab-pos.sh testnet prysm geth --binary
 ```
 
-The selected Network Release supplies the patched AB Geth binary. Prysm and Lighthouse binaries are downloaded from their official GitHub Releases. When a non-genesis validator needs new keys, the EthStaker Deposit CLI binary is downloaded from its official GitHub Release. Client binaries are verified before installation under `/data/abpos/<network>/bin/`.
+The selected Network Release supplies the patched AB Geth binary. Prysm and Lighthouse binaries are downloaded from their official GitHub Releases. When a non-genesis validator needs new keys, the EthStaker Deposit CLI binary is downloaded from its official GitHub Release. Client binaries are verified before installation under `/data/<chain>/<network>/bin/`.
 
-Binary processes run in detached sessions and write logs under `/data/abpos/<network>/logs/`. They are not configured to start automatically after a server reboot.
+Binary processes run in detached sessions and write logs under `/data/<chain>/<network>/logs/`. They are not configured to start automatically after a server reboot.
 
 ## 4. Node operations
 

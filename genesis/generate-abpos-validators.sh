@@ -2,23 +2,26 @@
 
 set -euo pipefail
 
-# Generate AB PoS genesis validator keys and deposit data.
-# The withdrawal address is the only required input.
+# Generate AB PoS genesis validator keys and deposit data from reviewed public
+# network settings supplied by the Network Operator.
 
 readonly validator_count="${VALIDATOR_COUNT:-1000}"
 readonly validator_start_index=0
-readonly deposit_amount=2048
 readonly host_uid="${SUDO_UID:-$(id -u)}"
 readonly host_gid="${SUDO_GID:-$(id -g)}"
 readonly deposit_cli_image="${DEPOSIT_CLI_IMAGE:-ghcr.io/ethstaker/ethstaker-deposit-cli:latest}"
 readonly deposit_cli_release_version="${DEPOSIT_CLI_RELEASE_VERSION:-latest}"
 readonly github_api_url="${GITHUB_API_URL:-https://api.github.com}"
+readonly default_release_repo="${ABPOS_RELEASE_REPO:-abdaodev/ab-pos-deploy}"
 
 deployment_mode="docker"
 deployment_mode_selected=false
 platform_arch=""
-
-readonly devnet_chain_setting='{"network_name":"abcore","genesis_fork_version":"0x000001ab","exit_fork_version":"0x000001ab","genesis_validator_root":"0x0000000000000000000000000000000000000000000000000000000000000000","multiplier":1,"min_activation_amount":32,"min_deposit_amount":1}'
+deposit_settings_file="${DEPOSIT_SETTINGS_FILE:-}"
+settings_release=""
+settings_release_repo="${default_release_repo}"
+settings_release_url=""
+settings_download_dir=""
 
 function color() {
     # Usage: color "31;5" "message"
@@ -36,10 +39,14 @@ function usage() {
 Generate AB PoS genesis validator keys and deposit data.
 
 Usage:
-  generate-abpos-validators.sh [OPTIONS] <network> <withdrawal-address>
-  WITHDRAWAL_ADDRESS=<address> generate-abpos-validators.sh [OPTIONS] <network>
+  generate-abpos-validators.sh --release VERSION [OPTIONS] [chain] <network> <withdrawal-address>
+  generate-abpos-validators.sh --deposit-settings FILE [OPTIONS] [chain] <network> <withdrawal-address>
 
 Arguments:
+  chain
+      Chain whose Genesis Validator keys are being generated.
+      Default: abcore
+
   network
       Network whose Genesis Validator keys are being generated.
       Supported values: testnet, mainnet.
@@ -49,6 +56,18 @@ Arguments:
       The value must be a 20-byte hexadecimal address prefixed with 0x.
 
 Options:
+  --release VERSION
+      Genesis Participation Release tag. The tag must end in -rc.0.
+
+  --release-repo OWNER/REPO
+      Release repository. Default: abdaodev/ab-pos-deploy.
+
+  --release-url URL
+      Download a specific Genesis Participation .tar.gz archive.
+
+  --deposit-settings FILE
+      Use a local public settings file instead of a Release.
+
   --docker
       Generate keys with the Deposit CLI container. This is the default.
 
@@ -59,6 +78,10 @@ Options:
       Show this help message and exit.
 
 Environment variables:
+  ABPOS_CHAIN_NAME
+      Chain name used when it is omitted from the command.
+      Default: abcore
+
   WITHDRAWAL_ADDRESS
       Withdrawal address used when the positional argument is omitted.
 
@@ -68,7 +91,13 @@ Environment variables:
 
   ABPOS_ROOT_PATH
       Network output directory.
-      Default: /data/abpos/<network>
+      Default: /data/<chain>/<network>
+
+  DEPOSIT_SETTINGS_FILE
+      Alternative to --deposit-settings.
+
+  ABPOS_RELEASE_REPO
+      Default repository used by --release.
 
   DEPOSIT_CLI_IMAGE
       Deposit CLI Docker image used by --docker.
@@ -86,21 +115,31 @@ Outputs:
 
 Examples:
   ./generate-abpos-validators.sh \
+    --release v1.0.0-rc.0 \
     testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   ./generate-abpos-validators.sh --binary \
+    --release v1.0.0-rc.0 \
     testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   VALIDATOR_COUNT=10 \
-    ABPOS_ROOT_PATH=/data/abpos/testnet-operator-a \
+    ABPOS_ROOT_PATH=/data/abcore/testnet-operator-a \
     ./generate-abpos-validators.sh \
+    --deposit-settings ./deposit-settings.json \
     testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   WITHDRAWAL_ADDRESS=0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332 \
-    ./generate-abpos-validators.sh testnet
+    ./generate-abpos-validators.sh \
+    --deposit-settings ./deposit-settings.json \
+    testnet
+
+  ./generate-abpos-validators.sh \
+    --deposit-settings ./deposit-settings.json \
+    abapp1 testnet \
+    0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
 Security:
   Share only deposit_data-*.json with the Network Operator.
@@ -194,6 +233,100 @@ function normalize_legacy_output() {
         "Legacy validator key directory normalized successfully."
 }
 
+function github_release_json() {
+    local repository="$1"
+    local version="$2"
+    local api_url="${github_api_url%/}/repos/${repository}/releases"
+
+    if [[ "${version}" == "latest" ]]; then
+        curl -fsSL "${api_url}/latest"
+    else
+        curl -fsSL "${api_url}/tags/${version}"
+    fi
+}
+
+function cleanup_settings_download() {
+    if [[ -n "${settings_download_dir}" && -d "${settings_download_dir}" ]]; then
+        rm -rf -- "${settings_download_dir}"
+    fi
+}
+
+function download_deposit_settings() {
+    local release_json=""
+    local archive_name
+    local archive_url
+    local checksum_url
+    local archive_path
+    local checksum_path
+    local expected_sha256
+    local actual_sha256
+    local archive_listing
+    local member
+    local normalized_member
+    local member_count=0
+
+    if [[ -n "${settings_release}" ]]; then
+        [[ "${settings_release}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.0$ ]] \
+            || fail "Genesis Participation Release must use vMAJOR.MINOR.PATCH-rc.0."
+        [[ "${settings_release_repo}" =~ ^[^/]+/[^/]+$ ]] \
+            || fail "Release repository must use OWNER/REPO format."
+        release_json="$(github_release_json "${settings_release_repo}" "${settings_release}")" \
+            || fail "Unable to query Genesis Participation Release ${settings_release}."
+        [[ "$(jq -r '.prerelease // false' <<<"${release_json}")" == "true" ]] \
+            || fail "Genesis Participation Release ${settings_release} must be a Pre-release."
+        archive_name="${chain_name}-${network}-${settings_release}.tar.gz"
+        archive_url="$(jq -r --arg name "${archive_name}" \
+            '[.assets[] | select(.name == $name)][0].browser_download_url // empty' \
+            <<<"${release_json}")"
+        checksum_url="$(jq -r --arg name "${archive_name}.sha256" \
+            '[.assets[] | select(.name == $name)][0].browser_download_url // empty' \
+            <<<"${release_json}")"
+        [[ -n "${archive_url}" && -n "${checksum_url}" ]] \
+            || fail "Release ${settings_release} does not contain ${archive_name} and its checksum."
+    else
+        archive_url="${settings_release_url}"
+        archive_name="$(basename "${archive_url%%\?*}")"
+        [[ "${archive_name}" =~ ^${chain_name}-${network}-v[0-9]+\.[0-9]+\.[0-9]+-rc\.0\.tar\.gz$ ]] \
+            || fail "Genesis Participation archive must be named ${chain_name}-${network}-vMAJOR.MINOR.PATCH-rc.0.tar.gz."
+        checksum_url="${archive_url}.sha256"
+    fi
+
+    settings_download_dir="$(mktemp -d /tmp/abpos-deposit-settings.XXXXXX)"
+    trap cleanup_settings_download EXIT
+    archive_path="${settings_download_dir}/${archive_name}"
+    checksum_path="${archive_path}.sha256"
+    color "34" "Downloading Genesis Participation Release: ${archive_url}"
+    curl -fL "${archive_url}" -o "${archive_path}" \
+        || fail "Unable to download ${archive_name}."
+    curl -fsSL "${checksum_url}" -o "${checksum_path}" \
+        || fail "Unable to download ${archive_name}.sha256."
+    expected_sha256="$(awk 'NR == 1 { print $1 }' "${checksum_path}")"
+    [[ "${expected_sha256}" =~ ^[0-9a-fA-F]{64}$ ]] \
+        || fail "Invalid checksum for ${archive_name}."
+    actual_sha256="$(sha256sum "${archive_path}" | awk '{ print $1 }')"
+    [[ "${actual_sha256,,}" == "${expected_sha256,,}" ]] \
+        || fail "Checksum verification failed for ${archive_name}."
+
+    archive_listing="${settings_download_dir}/archive-contents.txt"
+    tar -tzf "${archive_path}" >"${archive_listing}" \
+        || fail "Unable to inspect ${archive_name}."
+    while IFS= read -r member; do
+        normalized_member="${member#./}"
+        [[ -n "${normalized_member}" ]] || continue
+        [[ "${normalized_member}" == "deposit-settings.json" ]] \
+            || fail "Unexpected file in Genesis Participation archive: ${member}"
+        member_count=$((member_count + 1))
+    done <"${archive_listing}"
+    [[ "${member_count}" -eq 1 ]] \
+        || fail "Genesis Participation archive must contain only deposit-settings.json."
+    tar -xzf "${archive_path}" -C "${settings_download_dir}" \
+        --no-same-owner --no-same-permissions \
+        || fail "Unable to extract ${archive_name}."
+    deposit_settings_file="${settings_download_dir}/deposit-settings.json"
+    [[ -f "${deposit_settings_file}" && ! -L "${deposit_settings_file}" ]] \
+        || fail "Genesis Participation settings must be a regular file."
+}
+
 arguments=()
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -209,6 +342,26 @@ while [[ "$#" -gt 0 ]]; do
             deployment_mode="binary"
             deployment_mode_selected=true
             ;;
+        --deposit-settings)
+            [[ "$#" -ge 2 ]] || fail "--deposit-settings requires a file."
+            deposit_settings_file="$2"
+            shift
+            ;;
+        --release)
+            [[ "$#" -ge 2 ]] || fail "--release requires a version."
+            settings_release="$2"
+            shift
+            ;;
+        --release-repo)
+            [[ "$#" -ge 2 ]] || fail "--release-repo requires OWNER/REPO."
+            settings_release_repo="$2"
+            shift
+            ;;
+        --release-url)
+            [[ "$#" -ge 2 ]] || fail "--release-url requires a URL."
+            settings_release_url="$2"
+            shift
+            ;;
         -h | --help)
             usage
             exit 0
@@ -222,19 +375,36 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-if [[ "${#arguments[@]}" -lt 1 || "${#arguments[@]}" -gt 2 ]]; then
+if [[ "${#arguments[@]}" -lt 1 || "${#arguments[@]}" -gt 3 ]]; then
     usage >&2
-    fail "Expected a network and an optional withdrawal address."
+    fail "Expected an optional chain, a network, and an optional withdrawal address."
 fi
 
-network="${arguments[0],,}"
+chain_name="${ABPOS_CHAIN_NAME:-abcore}"
+first_argument="${arguments[0],,}"
+case "${first_argument}" in
+    test | testnet | main | mainnet)
+        network="${first_argument}"
+        withdrawal_address="${arguments[1]:-${WITHDRAWAL_ADDRESS:-}}"
+        [[ "${#arguments[@]}" -le 2 ]] \
+            || fail "Too many positional arguments for the default chain."
+        ;;
+    *)
+        [[ "${#arguments[@]}" -ge 2 ]] || fail "Network is required after chain: ${first_argument}"
+        chain_name="${first_argument}"
+        network="${arguments[1],,}"
+        withdrawal_address="${arguments[2]:-${WITHDRAWAL_ADDRESS:-}}"
+        ;;
+esac
+
 case "${network}" in
     test | testnet) network="testnet" ;;
     main | mainnet) network="mainnet" ;;
     *) fail "Unsupported network: ${network}" ;;
 esac
 
-withdrawal_address="${arguments[1]:-${WITHDRAWAL_ADDRESS:-}}"
+[[ "${chain_name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
+    || fail "Invalid chain name: ${chain_name}"
 
 if [[ -z "${withdrawal_address}" ]]; then
     usage
@@ -249,8 +419,46 @@ if [[ ! "${validator_count}" =~ ^[1-9][0-9]*$ ]]; then
     fail "VALIDATOR_COUNT must be a positive integer."
 fi
 
-readonly network
-readonly root_path="${ABPOS_ROOT_PATH:-/data/abpos/${network}}"
+readonly chain_name network
+settings_source_count=0
+[[ -z "${deposit_settings_file}" ]] || settings_source_count=$((settings_source_count + 1))
+[[ -z "${settings_release}" ]] || settings_source_count=$((settings_source_count + 1))
+[[ -z "${settings_release_url}" ]] || settings_source_count=$((settings_source_count + 1))
+[[ "${settings_source_count}" -eq 1 ]] \
+    || fail "Specify exactly one of --release, --release-url, or --deposit-settings."
+require_command jq
+if [[ -z "${deposit_settings_file}" ]]; then
+    require_command curl
+    require_command sha256sum
+    require_command tar
+    download_deposit_settings
+fi
+[[ -s "${deposit_settings_file}" ]] \
+    || fail "Deposit settings file is missing or empty: ${deposit_settings_file}"
+require_command jq
+jq -e \
+    --arg chain "${chain_name}" \
+    --arg network "${network}" '
+        type == "object"
+        and .chain == $chain
+        and .network == $network
+        and (.deposit_amount | type == "number" and . > 0)
+        and (.devnet_chain_setting | type == "object")
+        and .devnet_chain_setting.network_name == $chain
+        and (.devnet_chain_setting.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+        and (.devnet_chain_setting.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+        and (.devnet_chain_setting.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
+        and (.devnet_chain_setting.multiplier | type == "number" and . > 0)
+        and (.devnet_chain_setting.min_activation_amount | type == "number" and . > 0)
+        and (.devnet_chain_setting.min_deposit_amount | type == "number" and . > 0)
+        and .deposit_amount >= .devnet_chain_setting.min_activation_amount
+        and .devnet_chain_setting.min_activation_amount >= .devnet_chain_setting.min_deposit_amount
+    ' "${deposit_settings_file}" >/dev/null \
+    || fail "Invalid deposit settings for ${chain_name}/${network}: ${deposit_settings_file}"
+readonly deposit_settings_file
+readonly deposit_amount="$(jq -r '.deposit_amount | tostring' "${deposit_settings_file}")"
+readonly devnet_chain_setting="$(jq -c '.devnet_chain_setting' "${deposit_settings_file}")"
+readonly root_path="${ABPOS_ROOT_PATH:-/data/${chain_name}/${network}}"
 readonly keys_path="${root_path}/keys"
 readonly validator_keys_path="${keys_path}/validator_keys"
 readonly legacy_validator_keys_path="${validator_keys_path}/validator_keys"
@@ -259,9 +467,13 @@ readonly mnemonic_path="${keys_path}/mnemonic.txt"
 readonly bin_path="${root_path}/bin"
 
 require_command find
+require_command jq
 require_command mv
 require_command openssl
 require_command rmdir
+if [[ "${EUID}" -eq 0 && -n "${SUDO_UID:-}" ]]; then
+    require_command chown
+fi
 
 if [[ "${deployment_mode}" == "docker" ]]; then
     require_command docker
@@ -281,18 +493,6 @@ else
         *) fail "Unsupported host architecture: $(uname -m)" ;;
     esac
 fi
-
-function github_release_json() {
-    local repository="$1"
-    local version="$2"
-    local api_url="${github_api_url%/}/repos/${repository}/releases"
-
-    if [[ "${version}" == "latest" ]]; then
-        curl -fsSL "${api_url}/latest"
-    else
-        curl -fsSL "${api_url}/tags/${version}"
-    fi
-}
 
 function install_deposit_cli_binary() {
     local release_json
@@ -364,6 +564,10 @@ umask 077
 
 if ! mkdir -p "${validator_keys_path}"; then
     fail "Cannot create ${validator_keys_path}. Check the directory permissions."
+fi
+
+if [[ "${EUID}" -eq 0 && -n "${SUDO_UID:-}" ]]; then
+    chown "${host_uid}:${host_gid}" "${keys_path}" "${validator_keys_path}"
 fi
 
 if [[ ! -w "${keys_path}" ]]; then
@@ -580,9 +784,32 @@ fi
 
 readonly deposit_file="${deposit_files[0]}"
 
+jq -e \
+    --arg chain "${chain_name}" \
+    --arg fork_version "$(jq -r '.genesis_fork_version' <<<"${devnet_chain_setting}")" \
+    --argjson expected_amount "$(jq -n \
+        --argjson amount "${deposit_amount}" \
+        --argjson multiplier "$(jq -r '.multiplier' <<<"${devnet_chain_setting}")" \
+        '$amount * $multiplier * 1000000000')" '
+        type == "array"
+        and length > 0
+        and all(.[];
+            .network_name == $chain
+            and (("0x" + (.fork_version | sub("^0x"; ""))) | ascii_downcase)
+                == ($fork_version | ascii_downcase)
+            and .amount == $expected_amount
+        )
+    ' "${deposit_file}" >/dev/null \
+    || fail "Generated deposit data does not match ${deposit_settings_file}."
+
 chmod 644 "${deposit_file}"
+if [[ "${EUID}" -eq 0 && -n "${SUDO_UID:-}" ]]; then
+    chown -R "${host_uid}:${host_gid}" "${keys_path}"
+fi
 
 color "32" "Validator generation completed successfully."
+color "1;36" "Chain: ${chain_name}"
+color "1;36" "Network: ${network}"
 color "1;36" "Withdrawal address: ${withdrawal_address}"
 color "1;36" "Validator count: ${validator_count}"
 color "1;36" "Validator keys: ${validator_keys_path}"

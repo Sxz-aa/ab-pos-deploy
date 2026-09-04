@@ -2,8 +2,9 @@
 set -Eeuo pipefail
 
 readonly root_dir="${ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-readonly network="${1:-${NETWORK:-testnet}}"
-readonly share_dir="${root_dir}/abpos/${network}/share"
+readonly chain="${1:-${CHAIN:-abcore}}"
+readonly network="${2:-${NETWORK:-testnet}}"
+readonly share_dir="${root_dir}/${chain}/${network}/share"
 readonly devp2p_bin="${DEVP2P_BIN:-devp2p}"
 readonly timeout_seconds="${BOOTNODE_TIMEOUT_SECONDS:-10}"
 readonly -a network_timeout=(timeout --foreground --kill-after=2s "${timeout_seconds}s")
@@ -33,6 +34,7 @@ function read_data_lines() {
     sed -e 's/\r$//' -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*#/d' "$1"
 }
 
+[[ "${chain}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "Invalid chain name: ${chain}"
 [[ "${network}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "Invalid network name: ${network}"
 [[ -d "${share_dir}" ]] || fail "Network share directory not found: ${share_dir}"
 [[ -x "${devp2p_bin}" ]] || fail "devp2p is not executable: ${devp2p_bin}"
@@ -192,8 +194,8 @@ if (( failure_count > 0 )); then
     for failure_message in "${failure_messages[@]}"; do
         printf '  - %s\n' "${failure_message}"
     done
-    printf '\nERROR: %d bootstrap node check(s) failed for %s.\n' \
-        "${failure_count}" "${network}"
+    printf '\nERROR: %d bootstrap node check(s) failed for %s/%s.\n' \
+        "${failure_count}" "${chain}" "${network}"
     exit 1
 fi
-printf 'Verified all %s bootstrap nodes.\n' "${network}"
+printf 'Verified all %s/%s bootstrap nodes.\n' "${chain}" "${network}"

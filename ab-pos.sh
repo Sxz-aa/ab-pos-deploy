@@ -6,7 +6,8 @@ set -euo pipefail
 
 readonly script_version="0.2.0"
 readonly default_release_repo="${ABPOS_RELEASE_REPO:-abdaodev/ab-pos-deploy}"
-readonly default_root_dir="${ABPOS_ROOT_DIR:-/data/abpos}"
+readonly default_chain_name="${ABPOS_CHAIN_NAME:-abcore}"
+readonly default_root_dir="${ABPOS_ROOT_DIR:-/data}"
 readonly github_api_url="${GITHUB_API_URL:-https://api.github.com}"
 readonly geth_image_override="${GETH_DOCKER_IMAGE:-}"
 readonly default_prysm_beacon_image="${PRYSM_BEACON_IMAGE:-offchainlabs/prysm-beacon-chain:stable}"
@@ -33,13 +34,14 @@ function usage() {
 AB PoS node installer.
 
 Usage:
-  ab-pos.sh <network> [consensus-client] [geth] [options]
-  ab-pos.sh <network> --status
-  ab-pos.sh <network> --logs [service]
-  ab-pos.sh <network> --stop
-  ab-pos.sh <network> --restart
+  ab-pos.sh [chain] <network> [consensus-client] [geth] [options]
+  ab-pos.sh [chain] <network> --status
+  ab-pos.sh [chain] <network> --logs [service]
+  ab-pos.sh [chain] <network> --stop
+  ab-pos.sh [chain] <network> --restart
 
 Arguments:
+  chain               Chain name; default: abcore
   network             testnet or mainnet
   consensus-client    prysm or lighthouse; detected for an installed node
   execution-client    geth; optional because Geth is currently the only choice
@@ -70,8 +72,8 @@ Core options:
   --release VERSION              Release tag; default: latest
   --release-repo OWNER/REPO      Default: abdaodev/ab-pos-deploy
   --release-url URL              Download a specific .tar.gz Release archive
-  --root-dir PATH                Default: /data/abpos
-  --data-dir PATH                Default: <root-dir>/<network>
+  --root-dir PATH                Default: /data
+  --data-dir PATH                Default: <root-dir>/<chain>/<network>
   --keys-dir PATH                Keystores to import when supplied
   --password-file PATH           Keystore import or Prysm wallet password
   --public-ip ADDRESS            Override Genesis node public IPv4 detection
@@ -89,6 +91,8 @@ Operations:
 
 Examples:
   ./ab-pos.sh testnet prysm geth
+
+  ./ab-pos.sh abapp1 testnet prysm geth
 
   ./ab-pos.sh testnet --status
 
@@ -215,6 +219,28 @@ function first_data_line() {
     sed -e 's/\r$//' -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*#/d' "${file}" | head -n 1
 }
 
+function yaml_scalar() {
+    local path="$1"
+    local key="$2"
+    local value
+
+    value="$(awk -F: -v key="${key}" '
+        $1 == key {
+            value = substr($0, index($0, ":") + 1)
+            sub(/[[:space:]]+#.*/, "", value)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            print value
+            exit
+        }
+    ' "${path}")"
+    case "${value}" in
+        \'*\') value="${value#\'}"; value="${value%\'}" ;;
+        \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    esac
+    printf '%s\n' "${value}"
+}
+
+chain_name=""
 network=""
 consensus_client=""
 execution_client=""
@@ -264,8 +290,22 @@ fi
     exit 1
 }
 
-network="${1,,}"
+chain_name="${default_chain_name,,}"
+target="${1,,}"
 shift
+
+case "${target}" in
+    test | testnet | main | mainnet)
+        network="${target}"
+        ;;
+    *)
+        chain_name="${target}"
+        [[ -n "${1:-}" && "${1:-}" != --* ]] \
+            || fail "Network is required after chain: ${chain_name}"
+        network="${1,,}"
+        shift
+        ;;
+esac
 
 if [[ -n "${1:-}" && "${1:-}" != --* ]]; then
     case "${1,,}" in
@@ -291,6 +331,9 @@ case "${network}" in
     main | mainnet) network="mainnet" ;;
     *) fail "Unsupported network: ${network}" ;;
 esac
+
+[[ "${chain_name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
+    || fail "Invalid chain name: ${chain_name}"
 
 execution_client="${execution_client:-geth}"
 [[ "${execution_client}" == "geth" ]] || fail "Unsupported execution client: ${execution_client}"
@@ -344,7 +387,7 @@ done
 [[ "${validator_count}" =~ ^[1-9][0-9]*$ ]] || fail "Validator count must be a positive integer."
 [[ "${release_repo}" =~ ^[^/]+/[^/]+$ ]] || fail "Release repository must use OWNER/REPO format."
 
-data_dir="${data_dir:-${root_dir}/${network}}"
+data_dir="${data_dir:-${root_dir}/${chain_name}/${network}}"
 
 function detect_docker_consensus_client() {
     command -v docker >/dev/null 2>&1 || return 1
@@ -352,6 +395,7 @@ function detect_docker_consensus_client() {
     local container_id
     local container_name
     local label_client
+    local label_chain
     local label_network
     local label_role
     local description
@@ -363,6 +407,8 @@ function detect_docker_consensus_client() {
         [[ -n "${container_id}" ]] || continue
         container_name="$(docker container inspect "${container_id}" --format '{{.Name}}' 2>/dev/null)" || continue
         container_name="${container_name#/}"
+        label_chain="$(docker container inspect "${container_id}" \
+            --format '{{index .Config.Labels "io.abpos.chain"}}' 2>/dev/null || true)"
         label_network="$(docker container inspect "${container_id}" \
             --format '{{index .Config.Labels "io.abpos.network"}}' 2>/dev/null || true)"
         label_role="$(docker container inspect "${container_id}" \
@@ -373,11 +419,14 @@ function detect_docker_consensus_client() {
             --format '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null || true)"
 
         relevant=false
-        if [[ "${label_network}:${label_role}" == "${network}:consensus" ]]; then
+        if [[ "${label_chain}:${label_network}:${label_role}" \
+            == "${chain_name}:${network}:consensus" ]]; then
             relevant=true
         fi
         case "${container_name}" in
-            "abpos-${network}-consensus" | "abpos-${network}-prysm" | "abpos-${network}-lighthouse")
+            "${chain_name}-${network}-consensus" | \
+            "${chain_name}-${network}-prysm" | \
+            "${chain_name}-${network}-lighthouse")
                 relevant=true
                 ;;
         esac
@@ -512,7 +561,7 @@ log_dir="${data_dir}/logs"
 fee_recipient_file="${data_dir}/fee-recipient.txt"
 validator_password_reference_file="${data_dir}/validator-password-file.txt"
 
-container_prefix="abpos-${network}"
+container_prefix="${chain_name}-${network}"
 geth_container="${container_prefix}-execution"
 beacon_container="${container_prefix}-consensus"
 validator_container="${container_prefix}-validator"
@@ -543,8 +592,8 @@ function containers_for_role() {
         [[ -n "${container_id}" ]] || continue
         matched=false
         if [[ "$(docker container inspect "${container_id}" \
-            --format '{{index .Config.Labels "io.abpos.network"}}:{{index .Config.Labels "io.abpos.role"}}' 2>/dev/null)" \
-            == "${network}:${role}" ]]; then
+            --format '{{index .Config.Labels "io.abpos.chain"}}:{{index .Config.Labels "io.abpos.network"}}:{{index .Config.Labels "io.abpos.role"}}' 2>/dev/null)" \
+            == "${chain_name}:${network}:${role}" ]]; then
             matched=true
         else
             for host_path in "$@"; do
@@ -1338,14 +1387,14 @@ function resolve_release() {
     fi
 
     network_asset_count="$(
-        jq -r --arg prefix "abpos-${network}-" '
+        jq -r --arg prefix "${chain_name}-${network}-" '
             [.assets[] | select(.name | startswith($prefix)) | select(.name | endswith(".tar.gz"))] | length
         ' <<<"${release_json}"
     )"
     [[ "${network_asset_count}" -eq 1 ]] \
-        || fail "The selected Release must contain exactly one ${network} network archive; found ${network_asset_count}."
+        || fail "The selected Release must contain exactly one ${chain_name}/${network} network archive; found ${network_asset_count}."
     network_release_url="$(
-        jq -r --arg prefix "abpos-${network}-" '
+        jq -r --arg prefix "${chain_name}-${network}-" '
             [.assets[] | select(.name | startswith($prefix)) | select(.name | endswith(".tar.gz"))][0].browser_download_url
         ' <<<"${release_json}"
     )"
@@ -1391,12 +1440,14 @@ function resolve_release() {
 
 function download_release() {
     local archive_path
+    local archive_name
     local archive_listing
     local checksum_url
     local checksum_path
     local checksum_available=false
     local local_archive=false
     local previous_share_dir
+    local release_config_name
     local required_file
     local temporary_share_dir
     local member
@@ -1419,6 +1470,10 @@ function download_release() {
         color "34" "Downloading network Release: ${network_release_url}"
         curl -fL "${network_release_url}" -o "${archive_path}"
     fi
+
+    archive_name="$(basename "${archive_path}")"
+    [[ "${archive_name}" == "${chain_name}-${network}-"*.tar.gz ]] \
+        || fail "Network Release archive must be named ${chain_name}-${network}-<version>.tar.gz; got ${archive_name}."
 
     if [[ "${local_archive}" == true ]]; then
         [[ -s "${checksum_path}" ]] && checksum_available=true
@@ -1458,12 +1513,22 @@ function download_release() {
     fi
 
     for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
-        deposit_contract_block.txt; do
+        deposit_contract_block.txt genesis_validators_root.txt deposit-settings.json; do
         if [[ ! -s "${temporary_share_dir}/${required_file}" ]]; then
             rm -rf -- "${temporary_share_dir}"
             fail "The network Release is missing required file: ${required_file}"
         fi
     done
+    release_config_name="$(yaml_scalar "${temporary_share_dir}/config.yaml" CONFIG_NAME)"
+    if [[ "${release_config_name}" != "${chain_name}-${network}" ]]; then
+        rm -rf -- "${temporary_share_dir}"
+        fail "Network Release CONFIG_NAME must be ${chain_name}-${network}; got ${release_config_name:-empty}."
+    fi
+    release_config_name="$(yaml_scalar "${temporary_share_dir}/config.prysm.yaml" CONFIG_NAME)"
+    if [[ "${release_config_name}" != "${chain_name}-${network}" ]]; then
+        rm -rf -- "${temporary_share_dir}"
+        fail "Prysm CONFIG_NAME must be ${chain_name}-${network}; got ${release_config_name:-empty}."
+    fi
     if [[ "${genesis_mode}" == false ]]; then
         for required_file in bootstrap_nodes.txt bootstrap_nodes_execution.txt; do
             if [[ ! -s "${temporary_share_dir}/${required_file}" ]]; then
@@ -1492,9 +1557,43 @@ resolve_release
 download_release
 
 for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
-    deposit_contract_block.txt; do
+    deposit_contract_block.txt genesis_validators_root.txt deposit-settings.json; do
     [[ -s "${share_dir}/${required_file}" ]] || fail "Missing required file: ${share_dir}/${required_file}"
 done
+jq -e \
+    --arg chain "${chain_name}" \
+    --arg network "${network}" '
+        type == "object"
+        and .chain == $chain
+        and .network == $network
+        and (.deposit_amount | type == "number" and . > 0)
+        and (.devnet_chain_setting | type == "object")
+        and .devnet_chain_setting.network_name == $chain
+        and (.devnet_chain_setting.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+        and (.devnet_chain_setting.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+        and (.devnet_chain_setting.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
+        and (.devnet_chain_setting.multiplier | type == "number" and . > 0)
+        and (.devnet_chain_setting.min_activation_amount | type == "number" and . > 0)
+        and (.devnet_chain_setting.min_deposit_amount | type == "number" and . > 0)
+        and .deposit_amount >= .devnet_chain_setting.min_activation_amount
+        and .devnet_chain_setting.min_activation_amount >= .devnet_chain_setting.min_deposit_amount
+    ' "${share_dir}/deposit-settings.json" >/dev/null \
+    || fail "Invalid deposit settings for ${chain_name}/${network}."
+settings_genesis_fork_version="$(jq -r \
+    '.devnet_chain_setting.genesis_fork_version // empty' "${share_dir}/deposit-settings.json")"
+settings_exit_fork_version="$(jq -r \
+    '.devnet_chain_setting.exit_fork_version // empty' "${share_dir}/deposit-settings.json")"
+settings_genesis_validators_root="$(jq -r \
+    '.devnet_chain_setting.genesis_validator_root // empty' "${share_dir}/deposit-settings.json")"
+published_genesis_validators_root="$(tr -d '[:space:]' < "${share_dir}/genesis_validators_root.txt")"
+[[ "${settings_genesis_fork_version,,}" == \
+    "$(yaml_scalar "${share_dir}/config.yaml" GENESIS_FORK_VERSION | tr '[:upper:]' '[:lower:]')" ]] \
+    || fail "deposit-settings.json genesis_fork_version does not match config.yaml."
+[[ "${settings_exit_fork_version,,}" == \
+    "$(yaml_scalar "${share_dir}/config.yaml" CAPELLA_FORK_VERSION | tr '[:upper:]' '[:lower:]')" ]] \
+    || fail "deposit-settings.json exit_fork_version does not match CAPELLA_FORK_VERSION."
+[[ "${settings_genesis_validators_root,,}" == "${published_genesis_validators_root,,}" ]] \
+    || fail "deposit-settings.json genesis_validator_root does not match genesis_validators_root.txt."
 if [[ "${genesis_mode}" == false ]]; then
     for required_file in bootstrap_nodes.txt bootstrap_nodes_execution.txt; do
         [[ -s "${share_dir}/${required_file}" ]] \
@@ -1591,6 +1690,7 @@ function generate_validator_keys() {
     local keystore_count
     local mnemonic
     local password
+    local deposit_amount
     local devnet_setting
 
     keys_parent="$(dirname "${keys_dir}")"
@@ -1642,7 +1742,25 @@ function generate_validator_keys() {
 
     mnemonic="$(<"${mnemonic_file}")"
     password="$(<"${password_file}")"
-    devnet_setting='{"network_name":"abcore","genesis_fork_version":"0x000001ab","exit_fork_version":"0x000001ab","genesis_validator_root":"0x0000000000000000000000000000000000000000000000000000000000000000","multiplier":1,"min_activation_amount":32,"min_deposit_amount":1}'
+    jq -e \
+        --arg chain "${chain_name}" \
+        --arg network "${network}" '
+            type == "object"
+            and .chain == $chain
+            and .network == $network
+            and (.deposit_amount | type == "number" and . > 0)
+            and (.devnet_chain_setting | type == "object")
+            and .devnet_chain_setting.network_name == $chain
+            and (.devnet_chain_setting.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+            and (.devnet_chain_setting.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+            and (.devnet_chain_setting.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
+            and (.devnet_chain_setting.multiplier | type == "number" and . > 0)
+            and (.devnet_chain_setting.min_activation_amount | type == "number" and . > 0)
+            and (.devnet_chain_setting.min_deposit_amount | type == "number" and . > 0)
+        ' "${share_dir}/deposit-settings.json" >/dev/null \
+        || fail "Invalid deposit settings in ${share_dir}/deposit-settings.json"
+    deposit_amount="$(jq -r '.deposit_amount | tostring' "${share_dir}/deposit-settings.json")"
+    devnet_setting="$(jq -c '.devnet_chain_setting' "${share_dir}/deposit-settings.json")"
 
     if [[ "${deployment_mode}" == "binary" ]]; then
         local generation_dir
@@ -1659,7 +1777,7 @@ function generate_validator_keys() {
             --num_validators="${validator_count}" \
             --withdrawal_address="${withdrawal_address}" \
             --compounding \
-            --amount=2048 \
+            --amount="${deposit_amount}" \
             --devnet_chain_setting="${devnet_setting}" \
             "--folder=${generation_dir}"; then
             rm -rf -- "${generation_dir}"
@@ -1684,7 +1802,7 @@ function generate_validator_keys() {
             --num_validators="${validator_count}" \
             --withdrawal_address="${withdrawal_address}" \
             --compounding \
-            --amount=2048 \
+            --amount="${deposit_amount}" \
             --devnet_chain_setting="${devnet_setting}" \
             --folder=/app
     fi
@@ -2105,6 +2223,7 @@ function deploy_binary_node() {
 if [[ "${deployment_mode}" == "binary" ]]; then
     deploy_binary_node
     color "32" "AB PoS node installation completed."
+    color "37" "Chain: ${chain_name}"
     color "37" "Network: ${network}"
     color "37" "Consensus client: ${consensus_client}"
     color "37" "Execution client: geth"
@@ -2185,6 +2304,7 @@ fi
 
 docker run -d \
     --name "${geth_container}" \
+    --label "io.abpos.chain=${chain_name}" \
     --label "io.abpos.network=${network}" \
     --label "io.abpos.role=execution" \
     --restart unless-stopped \
@@ -2232,6 +2352,7 @@ if [[ "${consensus_client}" == "prysm" ]]; then
     done
     docker run -d \
         --name "${beacon_container}" \
+        --label "io.abpos.chain=${chain_name}" \
         --label "io.abpos.network=${network}" \
         --label "io.abpos.role=consensus" \
         --label "io.abpos.consensus-client=${consensus_client}" \
@@ -2264,6 +2385,7 @@ else
     fi
     docker run -d \
         --name "${beacon_container}" \
+        --label "io.abpos.chain=${chain_name}" \
         --label "io.abpos.network=${network}" \
         --label "io.abpos.role=consensus" \
         --label "io.abpos.consensus-client=${consensus_client}" \
@@ -2335,6 +2457,7 @@ if [[ "${validator_mode}" == true ]]; then
         import_prysm_keys
         docker run -d \
             --name "${validator_container}" \
+            --label "io.abpos.chain=${chain_name}" \
             --label "io.abpos.network=${network}" \
             --label "io.abpos.role=validator" \
             --label "io.abpos.consensus-client=${consensus_client}" \
@@ -2352,6 +2475,7 @@ if [[ "${validator_mode}" == true ]]; then
         import_lighthouse_keys
         docker run -d \
             --name "${validator_container}" \
+            --label "io.abpos.chain=${chain_name}" \
             --label "io.abpos.network=${network}" \
             --label "io.abpos.role=validator" \
             --label "io.abpos.consensus-client=${consensus_client}" \
@@ -2367,6 +2491,7 @@ if [[ "${validator_mode}" == true ]]; then
 fi
 
 color "32" "AB PoS node installation completed."
+color "37" "Chain: ${chain_name}"
 color "37" "Network: ${network}"
 color "37" "Consensus client: ${consensus_client}"
 color "37" "Execution client: geth"

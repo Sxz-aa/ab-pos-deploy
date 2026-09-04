@@ -50,12 +50,12 @@ jobs:
             || { printf 'ERROR: Release tag does not match %s.\n' "${RELEASE_TAG}" >&2; exit 1; }
           if [[ "$(jq -r '.prerelease' <<<"${release_json}")" == "true" ]]; then
             if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-              printf 'ERROR: a Genesis Candidate Pre-release cannot be promoted: %s\n' \
+              printf 'ERROR: a Pre-release cannot be promoted: %s\n' \
                 "${RELEASE_TAG}" >&2
               exit 1
             fi
             printf 'promote=false\n' >>"${GITHUB_OUTPUT}"
-            printf 'Candidate Pre-release %s is not eligible for Latest or Docker latest.\n' \
+            printf 'Pre-release %s is not eligible for Latest or Docker latest.\n' \
               "${RELEASE_TAG}"
             exit 0
           fi
@@ -73,7 +73,7 @@ jobs:
           mapfile -t network_archives < <(
             jq -r --arg tag "${RELEASE_TAG}" '
               .assets[].name
-              | select(startswith("abpos-"))
+              | select(startswith("ab-geth-") | not)
               | select(endswith("-" + $tag + ".tar.gz"))
             ' <<<"${release_json}"
           )

@@ -12,8 +12,8 @@ function fail() {
 function usage() {
     cat <<'USAGE'
 Usage:
-  ./build.sh --check NETWORK RELEASE_PHASE
-  ./build.sh VERSION NETWORK RELEASE_PHASE
+  ./build.sh --check CHAIN NETWORK RELEASE_PHASE
+  ./build.sh VERSION CHAIN NETWORK RELEASE_PHASE
 
 RELEASE_PHASE must be candidate or release.
 USAGE
@@ -115,9 +115,11 @@ function ssz_uint64_le() {
 }
 
 function validate_network() {
-    local target_network="$1"
-    local target_phase="$2"
-    local target_share_dir="${root_dir}/abpos/${target_network}/share"
+    local target_chain="$1"
+    local target_network="$2"
+    local target_phase="$3"
+    local target_config_name="${target_chain}-${target_network}"
+    local target_share_dir="${root_dir}/${target_chain}/${target_network}/share"
     local required_file
     local share_entry
     local share_name
@@ -126,6 +128,10 @@ function validate_network() {
     local published_deposit_address
     local deposit_block_hash
     local genesis_validators_root
+    local ssz_genesis_validators_root
+    local settings_genesis_fork_version
+    local settings_exit_fork_version
+    local settings_genesis_validators_root
     local execution_genesis_time
     local beacon_genesis_time
     local min_genesis_time
@@ -141,6 +147,7 @@ function validate_network() {
     local prysm_value
     local -a shared_config_keys
 
+    [[ "${target_chain}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid chain name: ${target_chain}"
     [[ "${target_network}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid network name: ${target_network}"
     case "${target_phase}" in
         candidate|release) ;;
@@ -149,7 +156,7 @@ function validate_network() {
 
     [[ -d "${target_share_dir}" ]] || fail "network share directory not found: ${target_share_dir}"
     for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
-        deposit_contract_block.txt; do
+        deposit_contract_block.txt genesis_validators_root.txt deposit-settings.json; do
         [[ -s "${target_share_dir}/${required_file}" ]] || fail "required network file is missing or empty: ${target_share_dir}/${required_file}"
     done
     if [[ "${target_phase}" != "candidate" ]]; then
@@ -163,7 +170,7 @@ function validate_network() {
         case "${share_name}" in
             genesis.json|genesis.ssz|config.yaml|config.prysm.yaml|\
             deposit_contract.txt|deposit_contract_block.txt|deposit_contract_block_hash.txt|\
-            genesis_validators_root.txt|deploy_block.txt|bootstrap_nodes.txt|\
+            genesis_validators_root.txt|deposit-settings.json|deploy_block.txt|bootstrap_nodes.txt|\
             bootstrap_nodes_execution.txt|checkpoint_sync_urls.txt)
                 [[ -f "${share_entry}" && ! -L "${share_entry}" ]] \
                     || fail "network share entry must be a regular file: ${share_entry}"
@@ -210,8 +217,8 @@ function validate_network() {
 
     [[ "$(require_yaml_scalar "${target_share_dir}/config.yaml" PRESET_BASE)" == "mainnet" ]] \
         || fail "config.yaml PRESET_BASE must be mainnet"
-    [[ "$(require_yaml_scalar "${target_share_dir}/config.yaml" CONFIG_NAME)" == "${target_network}" ]] \
-        || fail "config.yaml CONFIG_NAME must match the release network ${target_network}"
+    [[ "$(require_yaml_scalar "${target_share_dir}/config.yaml" CONFIG_NAME)" == "${target_config_name}" ]] \
+        || fail "config.yaml CONFIG_NAME must match ${target_config_name}"
     [[ "$(require_yaml_scalar "${target_share_dir}/config.yaml" GENESIS_FORK_VERSION)" =~ ^0x[0-9a-fA-F]{8}$ ]] \
         || fail "GENESIS_FORK_VERSION must contain exactly four bytes"
 
@@ -264,11 +271,47 @@ function validate_network() {
         [[ "${deposit_block_hash}" =~ ^0x[0-9a-fA-F]{64}$ ]] \
             || fail "deposit_contract_block_hash.txt must contain one 32-byte hash"
     fi
-    if [[ -f "${target_share_dir}/genesis_validators_root.txt" ]]; then
-        genesis_validators_root="$(tr -d '[:space:]' < "${target_share_dir}/genesis_validators_root.txt")"
-        [[ "${genesis_validators_root}" =~ ^0x[0-9a-fA-F]{64}$ ]] \
-            || fail "genesis_validators_root.txt must contain one 32-byte root"
-    fi
+    genesis_validators_root="$(tr -d '[:space:]' < "${target_share_dir}/genesis_validators_root.txt")"
+    [[ "${genesis_validators_root}" =~ ^0x[0-9a-fA-F]{64}$ ]] \
+        || fail "genesis_validators_root.txt must contain one 32-byte root"
+    ssz_genesis_validators_root="0x$(od -An -v -tx1 -j8 -N32 \
+        "${target_share_dir}/genesis.ssz" | tr -d '[:space:]')"
+    [[ "${ssz_genesis_validators_root,,}" == "${genesis_validators_root,,}" ]] \
+        || fail "genesis_validators_root.txt does not match genesis.ssz"
+
+    jq -e \
+        --arg chain "${target_chain}" \
+        --arg network "${target_network}" '
+            type == "object"
+            and .chain == $chain
+            and .network == $network
+            and (.deposit_amount | type == "number" and . > 0)
+            and (.devnet_chain_setting | type == "object")
+            and .devnet_chain_setting.network_name == $chain
+            and (.devnet_chain_setting.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+            and (.devnet_chain_setting.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
+            and (.devnet_chain_setting.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
+            and (.devnet_chain_setting.multiplier | type == "number" and . > 0)
+            and (.devnet_chain_setting.min_activation_amount | type == "number" and . > 0)
+            and (.devnet_chain_setting.min_deposit_amount | type == "number" and . > 0)
+            and .deposit_amount >= .devnet_chain_setting.min_activation_amount
+            and .devnet_chain_setting.min_activation_amount >= .devnet_chain_setting.min_deposit_amount
+        ' "${target_share_dir}/deposit-settings.json" >/dev/null \
+        || fail "deposit-settings.json is invalid for ${target_chain}/${target_network}"
+    settings_genesis_fork_version="$(jq -r \
+        '.devnet_chain_setting.genesis_fork_version' "${target_share_dir}/deposit-settings.json")"
+    settings_exit_fork_version="$(jq -r \
+        '.devnet_chain_setting.exit_fork_version' "${target_share_dir}/deposit-settings.json")"
+    settings_genesis_validators_root="$(jq -r \
+        '.devnet_chain_setting.genesis_validator_root' "${target_share_dir}/deposit-settings.json")"
+    [[ "${settings_genesis_fork_version,,}" == \
+        "$(require_yaml_scalar "${target_share_dir}/config.yaml" GENESIS_FORK_VERSION | tr '[:upper:]' '[:lower:]')" ]] \
+        || fail "deposit-settings.json genesis_fork_version does not match config.yaml"
+    [[ "${settings_exit_fork_version,,}" == \
+        "$(require_yaml_scalar "${target_share_dir}/config.yaml" CAPELLA_FORK_VERSION | tr '[:upper:]' '[:lower:]')" ]] \
+        || fail "deposit-settings.json exit_fork_version does not match CAPELLA_FORK_VERSION"
+    [[ "${settings_genesis_validators_root,,}" == "${genesis_validators_root,,}" ]] \
+        || fail "deposit-settings.json genesis_validator_root does not match genesis_validators_root.txt"
 
     seconds_per_slot="$(decimal_quantity "$(require_yaml_scalar "${target_share_dir}/config.yaml" SECONDS_PER_SLOT)" SECONDS_PER_SLOT)"
     (( seconds_per_slot > 0 )) || fail "SECONDS_PER_SLOT must be positive"
@@ -295,24 +338,26 @@ function validate_network() {
             "      Nodes must use --genesis or provide --checkpoint-url."
     fi
 
-    printf 'Validated %s network files in %s mode.\n' "${target_network}" "${target_phase}"
+    printf 'Validated %s/%s network files in %s mode.\n' \
+        "${target_chain}" "${target_network}" "${target_phase}"
 }
 
 if [[ "${1:-}" == "--check" ]]; then
-    [[ "$#" -eq 3 ]] || { usage >&2; exit 2; }
-    validate_network "$2" "$3"
+    [[ "$#" -eq 4 ]] || { usage >&2; exit 2; }
+    validate_network "$2" "$3" "$4"
     exit 0
 fi
 
-[[ "$#" -eq 3 ]] || { usage >&2; exit 2; }
+[[ "$#" -eq 4 ]] || { usage >&2; exit 2; }
 readonly version="$1"
-readonly network="$2"
-readonly release_phase="$3"
-readonly share_dir="${root_dir}/abpos/${network}/share"
-readonly artifact="${build_dir}/abpos-${network}-${version}.tar.gz"
+readonly chain="$2"
+readonly network="$3"
+readonly release_phase="$4"
+readonly share_dir="${root_dir}/${chain}/${network}/share"
+readonly artifact="${build_dir}/${chain}-${network}-${version}.tar.gz"
 
 [[ "${version}" =~ ^[A-Za-z0-9._+-]+$ ]] || fail "invalid VERSION: ${version}"
-validate_network "${network}" "${release_phase}"
+validate_network "${chain}" "${network}" "${release_phase}"
 require_command tar
 require_command sha256sum
 

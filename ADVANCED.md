@@ -14,13 +14,14 @@ make
 
 The default `make` target performs three operations:
 
-1. Validates and packages the Testnet network files.
+1. Validates and packages the AB Core Testnet network files.
 2. Builds the patched AB Geth binary.
 3. Builds the exact-version AB Geth Docker image in the local Docker daemon.
 
 The default build settings come from the `Makefile`:
 
 ```text
+CHAIN=abcore
 NETWORK=testnet
 RELEASE_PHASE=release
 GETH_VERSION=v1.17.5
@@ -60,8 +61,8 @@ make network VERSION=local
 This produces:
 
 ```text
-build/abpos-testnet-local.tar.gz
-build/abpos-testnet-local.tar.gz.sha256
+build/abcore-testnet-local.tar.gz
+build/abcore-testnet-local.tar.gz.sha256
 ```
 
 The fixed version is optional. A normal `make` build is sufficient.
@@ -81,7 +82,7 @@ The file is optional. Without it, non-genesis nodes must provide `--checkpoint-u
 After `make`, identify the network archive printed by the build. If the `build/` directory contains multiple old archives, select the one created by the current build explicitly.
 
 ```bash
-network_archive="$(ls -1t "$PWD"/build/abpos-testnet-*.tar.gz | head -n 1)"
+network_archive="$(ls -1t "$PWD"/build/abcore-testnet-*.tar.gz | head -n 1)"
 geth_tag="$(make -s geth-version)"
 
 printf 'Network archive: %s\n' "$network_archive"
@@ -128,7 +129,7 @@ GETH_DOCKER_IMAGE="ghcr.io/abdaodev/ab-geth:${geth_tag}" \
 ./ab-pos.sh testnet prysm geth \
   --docker \
   --genesis \
-  --data-dir "$PWD/abpos-testnet-data" \
+  --data-dir "$PWD/abcore-testnet-data" \
   --release-url "file://${network_archive}"
 ```
 
@@ -144,7 +145,7 @@ build/ab-geth-v1.17.5-ab.1-linux-amd64.sha256
 Install a native-binary Genesis node from the local artifacts:
 
 ```bash
-network_archive="$(ls -1t "$PWD"/build/abpos-testnet-*.tar.gz | head -n 1)"
+network_archive="$(ls -1t "$PWD"/build/abcore-testnet-*.tar.gz | head -n 1)"
 geth_tag="$(make -s geth-version)"
 geth_binary="$PWD/build/ab-geth-${geth_tag}-linux-amd64"
 
@@ -198,7 +199,7 @@ Docker mode requires both the archive and an exact image reference:
 ```bash
 sudo env GETH_DOCKER_IMAGE=ghcr.io/example/ab-geth:v1.17.5-ab.1 \
   ./ab-pos.sh testnet prysm geth \
-    --release-url https://example.org/abpos-testnet-v1.2.3.tar.gz
+    --release-url https://example.org/abcore-testnet-v1.2.3.tar.gz
 ```
 
 Binary mode requires the archive, AB Geth binary, and checksum URLs:
@@ -209,7 +210,7 @@ sudo env \
   AB_GETH_BINARY_SHA256_URL=https://example.org/ab-geth-v1.17.5-ab.1-linux-amd64.sha256 \
   ./ab-pos.sh testnet prysm geth \
     --binary \
-    --release-url https://example.org/abpos-testnet-v1.2.3.tar.gz
+    --release-url https://example.org/abcore-testnet-v1.2.3.tar.gz
 ```
 
 The installer looks for the archive checksum at `<release-url>.sha256`.
@@ -273,13 +274,13 @@ sudo env LIGHTHOUSE_IMAGE=sigp/lighthouse:REVIEWED_TAG \
 The default network data directory is:
 
 ```text
-/data/abpos/<network>/
+/data/<chain>/<network>/
 ```
 
 Important subdirectories and files include:
 
 ```text
-/data/abpos/testnet/
+/data/abcore/testnet/
 |-- share/                  Public Network Release files
 |-- geth/                   Execution-layer database
 |-- prysm/ or lighthouse/   Beacon database
@@ -303,7 +304,7 @@ Override the entire network directory:
 
 ```bash
 sudo ./ab-pos.sh testnet prysm geth \
-  --data-dir /mnt/fast-disk/abpos-testnet
+  --data-dir /mnt/fast-disk/abcore-testnet
 ```
 
 Override Genesis Validator key inputs:

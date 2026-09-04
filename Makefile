@@ -2,6 +2,7 @@ SHELL := /usr/bin/env bash
 
 ROOT_DIR := $(CURDIR)
 BUILD_DIR := $(ROOT_DIR)/build
+CHAIN ?= abcore
 NETWORK ?= testnet
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || printf 'dev')
 RELEASE_PHASE ?= release
@@ -16,7 +17,7 @@ GETH_ARTIFACT := $(BUILD_DIR)/ab-geth-$(AB_GETH_VERSION)-linux-$(GETH_ARCH)
 DEVP2P_ARTIFACT := $(BUILD_DIR)/devp2p-$(GETH_VERSION)-linux-$(GETH_ARCH)
 GETH_PATCHES := $(wildcard patches/go-ethereum/*.patch)
 
-export ROOT_DIR BUILD_DIR NETWORK VERSION RELEASE_PHASE
+export ROOT_DIR BUILD_DIR CHAIN NETWORK VERSION RELEASE_PHASE
 export GETH_REPOSITORY GETH_VERSION AB_GETH_VERSION GETH_IMAGE GETH_PLATFORM
 
 .PHONY: all network testnet mainnet check geth geth-version devp2p verify-bootnodes docker push-docker clean
@@ -24,16 +25,16 @@ export GETH_REPOSITORY GETH_VERSION AB_GETH_VERSION GETH_IMAGE GETH_PLATFORM
 all: network geth docker
 
 network: check
-	./build.sh "$(VERSION)" "$(NETWORK)" "$(RELEASE_PHASE)"
+	./build.sh "$(VERSION)" "$(CHAIN)" "$(NETWORK)" "$(RELEASE_PHASE)"
 
 testnet:
-	$(MAKE) network NETWORK=testnet VERSION="$(VERSION)" RELEASE_PHASE="$(RELEASE_PHASE)"
+	$(MAKE) network CHAIN="$(CHAIN)" NETWORK=testnet VERSION="$(VERSION)" RELEASE_PHASE="$(RELEASE_PHASE)"
 
 mainnet:
-	$(MAKE) network NETWORK=mainnet VERSION="$(VERSION)" RELEASE_PHASE="$(RELEASE_PHASE)"
+	$(MAKE) network CHAIN="$(CHAIN)" NETWORK=mainnet VERSION="$(VERSION)" RELEASE_PHASE="$(RELEASE_PHASE)"
 
 check:
-	./build.sh --check "$(NETWORK)" "$(RELEASE_PHASE)"
+	./build.sh --check "$(CHAIN)" "$(NETWORK)" "$(RELEASE_PHASE)"
 	@test -x ab-pos.sh || { echo "ERROR: ab-pos.sh is missing or not executable." >&2; exit 1; }
 	@bash -n ab-pos.sh
 	@test -x scripts/prepare-geth-source.sh || { echo "ERROR: scripts/prepare-geth-source.sh is missing or not executable." >&2; exit 1; }
@@ -67,7 +68,7 @@ $(DEVP2P_ARTIFACT): scripts/prepare-geth-source.sh scripts/build-devp2p.sh docke
 	./scripts/build-devp2p.sh
 
 verify-bootnodes: check devp2p
-	DEVP2P_BIN="$(DEVP2P_ARTIFACT)" ./scripts/verify-bootnodes.sh "$(NETWORK)"
+	DEVP2P_BIN="$(DEVP2P_ARTIFACT)" ./scripts/verify-bootnodes.sh "$(CHAIN)" "$(NETWORK)"
 
 docker: geth docker/geth/Runtime.Dockerfile scripts/build-geth-docker.sh
 	./scripts/build-geth-docker.sh

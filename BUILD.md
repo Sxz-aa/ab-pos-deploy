@@ -38,7 +38,7 @@ make check
 Build the selected network archive:
 
 ```bash
-make network NETWORK=testnet VERSION=v1.2.3 RELEASE_PHASE=release
+make network CHAIN=abcore NETWORK=testnet VERSION=v1.2.3 RELEASE_PHASE=release
 ```
 
 Use `RELEASE_PHASE=candidate` for a Genesis Candidate whose bootstrap node files have not yet been populated. Normal Releases use `RELEASE_PHASE=release` and require valid consensus and execution bootstrap node lists. A checkpoint URL is validated when present but does not determine the Release mode.
@@ -73,18 +73,40 @@ Running `make` without a target builds the network archive, patched binary, and 
 
 ## Release assets
 
-Every Network Release is self-contained. GitHub packages one network archive for each populated `abpos/<network>/share` directory, plus one AB Geth binary:
+Every full Network Release is self-contained. GitHub packages one network archive for each populated `<chain>/<network>/share` directory, plus one AB Geth binary:
 
 ```text
-abpos-testnet-v1.2.3.tar.gz
-abpos-testnet-v1.2.3.tar.gz.sha256
+abcore-testnet-v1.2.3.tar.gz
+abcore-testnet-v1.2.3.tar.gz.sha256
 ab-geth-v1.17.5-ab.1-linux-amd64
 ab-geth-v1.17.5-ab.1-linux-amd64.sha256
 ```
 
-The same Release may contain both Testnet and Mainnet archives. Two Releases may contain the same AB Geth binary when the execution-client version has not changed.
+The same Release may contain archives for multiple chains and networks. Two Releases may contain the same AB Geth binary when the execution-client version has not changed.
 
 ## GitHub Release workflows
+
+### Publish Genesis participation settings
+
+Before collecting Genesis Deposit Data, commit a zero-root
+`<chain>/<network>/share/deposit-settings.json` and push the signed `rc.0` tag:
+
+```bash
+git tag -s v1.2.3-rc.0 -m "AB PoS testnet Genesis Participation v1.2.3-rc.0"
+git push <github-remote> v1.2.3-rc.0
+```
+
+The workflow publishes a Pre-release containing only the following assets for
+each zero-root network settings file:
+
+```text
+abcore-testnet-v1.2.3-rc.0.tar.gz
+abcore-testnet-v1.2.3-rc.0.tar.gz.sha256
+```
+
+The archive contains only `deposit-settings.json`. The `rc.0` workflow does
+not build or publish AB Geth. Genesis Validator Operators use this exact tag
+with `generate-abpos-validators.sh --release`.
 
 ### Build a Genesis Candidate
 
@@ -95,7 +117,7 @@ git tag -s v1.2.3-rc.1 -m "AB PoS testnet Genesis Candidate v1.2.3-rc.1"
 git push <github-remote> v1.2.3-rc.1
 ```
 
-The workflow publishes this tag as a GitHub Pre-release. Candidate validation permits missing or empty `bootstrap_nodes.txt` and `bootstrap_nodes_execution.txt`. Genesis Validator Operators and Infrastructure Operators install this exact tag on their long-lived nodes, then return the execution enode and consensus ENR printed by `ab-pos.sh`.
+The workflow publishes this tag as a complete GitHub Pre-release. Candidate validation permits missing or empty `bootstrap_nodes.txt` and `bootstrap_nodes_execution.txt`. Genesis Validator Operators and Infrastructure Operators install this exact tag on their long-lived nodes, then return the execution enode and consensus ENR printed by `ab-pos.sh`.
 
 ### Build the Final Genesis Release
 
