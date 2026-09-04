@@ -4,6 +4,7 @@
   "exit_fork_version": "0x030001ab",
   "genesis_validator_root": "0xded887d3e498bf4be2c8fe496a7ce5122733dca11d186b0c9893a380bf8bac39",
   "multiplier": 1,
-  "min_activation_amount": 32,
-  "min_deposit_amount": 1
+  "divisor": 1000,
+  "min_activation_amount": 32000,
+  "min_deposit_amount": 1000
 }

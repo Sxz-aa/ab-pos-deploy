@@ -81,8 +81,9 @@ field does not participate in Deposit Data signing.
   "exit_fork_version": "0x030001ab",
   "genesis_validator_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "multiplier": 1,
-  "min_activation_amount": 32,
-  "min_deposit_amount": 1
+  "divisor": 1000,
+  "min_activation_amount": 32000,
+  "min_deposit_amount": 1000
 }
 ```
 
@@ -93,11 +94,13 @@ The settings are derived from the reviewed `values.env`:
 | Deposit CLI network name | `CHAIN_NAME` |
 | Deposit fork version | `GENESIS_FORK_VERSION` |
 | Exit fork version | `CAPELLA_FORK_VERSION` |
-| Minimum activation amount | `MIN_VALIDATOR_GWEI` and `DEPOSIT_CLI_MULTIPLIER` |
-| Minimum Deposit CLI amount | `MIN_DEPOSIT_AMOUNT` |
+| Native-token conversion | `SUPPLY_MULTIPLIER` |
+| Minimum activation amount | `MIN_VALIDATOR_GWEI`, `SUPPLY_MULTIPLIER`, and `DEPOSIT_CLI_MULTIPLIER` |
+| Minimum native-token Deposit | `MIN_DEPOSIT_AMOUNT` |
 
-`SUPPLY_MULTIPLIER` is used only to calculate the execution-layer premine. It
-is not the Deposit CLI multiplier.
+`SUPPLY_MULTIPLIER` is the number of native tokens represented by one
+consensus-layer staking unit. It is published as `divisor`; Validator Operators
+do not configure it locally.
 
 Copy the settings into the network `share` directory and publish the
 settings-only `rc.0` Pre-release:
@@ -135,15 +138,16 @@ curl -fsSL \
   "https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/${participation_tag}/genesis/generate-abpos-validators.sh" |
 sudo bash -s -- \
   --release "${participation_tag}" \
-  --amount 32 \
+  --amount 32000 \
   testnet \
   0x0000000000000000000000000000000000000000
 ```
 
 Replace the example withdrawal address before running the command.
 The Validator Operator selects the amount deposited for each generated
-validator. `--amount 32` is the minimum activation amount in this example;
-use another amount permitted by the Network Operator when appropriate.
+validator, expressed in the network's native token. `--amount 32000` means
+32,000 AB and is the minimum activation amount in this example. Use another
+whole-token amount permitted by the Network Operator when appropriate.
 
 To use the official EthStaker Deposit CLI binary instead of Docker:
 
@@ -154,7 +158,7 @@ curl -fsSL \
 sudo bash -s -- \
   --binary \
   --release "${participation_tag}" \
-  --amount 32 \
+  --amount 32000 \
   testnet \
   0x0000000000000000000000000000000000000000
 ```
@@ -196,7 +200,7 @@ VALIDATOR_COUNT=10 \
 ABPOS_ROOT_PATH=/data/abcore/testnet-operator-a \
 ./generate-abpos-validators.sh \
   --deposit-settings ./deposit-settings.json \
-  --amount 32 \
+  --amount 32000 \
   testnet \
   0x0000000000000000000000000000000000000000
 ```

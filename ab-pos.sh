@@ -19,6 +19,8 @@ readonly geth_binary_checksum_url_override="${AB_GETH_BINARY_SHA256_URL:-}"
 readonly prysm_release_version="${PRYSM_RELEASE_VERSION:-latest}"
 readonly lighthouse_release_version="${LIGHTHOUSE_RELEASE_VERSION:-latest}"
 readonly deposit_cli_release_version="${DEPOSIT_CLI_RELEASE_VERSION:-latest}"
+readonly gwei_per_token=1000000000
+readonly max_exact_integer=9007199254740991
 
 function color() {
     printf '\033[%sm%s\033[0m\n' "$@"
@@ -66,7 +68,7 @@ Validator behavior:
 
 Core options:
   --withdrawal-address ADDRESS   Required when generating new validator keys
-  --amount AMOUNT                Per-validator Deposit amount when generating keys
+  --amount AMOUNT                Whole-token Deposit amount when generating keys
   --fee-recipient ADDRESS        Required only when no saved value exists
   --validator-count NUMBER       Default: 1000
   --checkpoint-url URL           Override the Release checkpoint URL
@@ -103,7 +105,7 @@ Examples:
 
   ./ab-pos.sh testnet lighthouse geth \
     --validator \
-    --amount 32 \
+    --amount 32000 \
     --withdrawal-address 0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332 \
     --fee-recipient 0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 USAGE
@@ -111,6 +113,33 @@ USAGE
 
 function require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
+}
+
+parsed_gwei=""
+function parse_whole_token_amount_to_gwei() {
+    local label="$1"
+    local value="$2"
+
+    [[ "${value}" =~ ^[1-9][0-9]*$ ]] \
+        || fail "${label} must be a positive whole-token amount."
+    [[ "${#value}" -lt 7 \
+        || ( "${#value}" -eq 7 && "${value}" < "9007200" ) ]] \
+        || fail "${label} is too large."
+    parsed_gwei=$((value * gwei_per_token))
+}
+
+formatted_amount=""
+function format_gwei_amount() {
+    local value="$1"
+    local whole=$((value / gwei_per_token))
+    local fraction
+
+    printf -v fraction '%09d' "$((value % gwei_per_token))"
+    while [[ "${fraction}" == *0 ]]; do
+        fraction="${fraction%0}"
+    done
+    formatted_amount="${whole}"
+    [[ -z "${fraction}" ]] || formatted_amount+=".${fraction}"
 }
 
 function install_missing_dependencies() {
@@ -1574,6 +1603,7 @@ jq -e \
             "exit_fork_version",
             "genesis_validator_root",
             "multiplier",
+            "divisor",
             "min_activation_amount",
             "min_deposit_amount"
         ] | sort)
@@ -1581,9 +1611,10 @@ jq -e \
         and (.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
         and (.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
         and (.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
-        and (.multiplier | type == "number" and . > 0)
-        and (.min_activation_amount | type == "number" and . > 0)
-        and (.min_deposit_amount | type == "number" and . > 0)
+        and (.multiplier | type == "number" and . > 0 and . == floor and . <= 9007199254740991)
+        and (.divisor | type == "number" and . > 0 and . == floor and . <= 9007199254740991)
+        and (.min_activation_amount | type == "number" and . > 0 and . == floor and . <= 9007199)
+        and (.min_deposit_amount | type == "number" and . > 0 and . == floor and . <= 9007199)
         and .min_activation_amount >= .min_deposit_amount
     ' "${share_dir}/deposit-settings.json" >/dev/null \
     || fail "Invalid deposit settings for ${chain_name}/${network}."
@@ -1700,6 +1731,20 @@ function generate_validator_keys() {
     local password
     local deposit_amount
     local chain_setting
+    local deposit_cli_chain_setting
+    local amount_multiplier
+    local amount_divisor
+    local public_amount_gwei
+    local cli_amount_gwei
+    local cli_deposit_amount
+    local expected_deposit_gwei
+    local public_minimum_activation_gwei
+    local cli_minimum_activation_gwei
+    local cli_minimum_activation_amount
+    local public_minimum_deposit_gwei
+    local cli_minimum_deposit_gwei
+    local cli_minimum_deposit_amount
+    local deposit_file
 
     keys_parent="$(dirname "${keys_dir}")"
     host_uid="${SUDO_UID:-$(id -u)}"
@@ -1752,13 +1797,9 @@ function generate_validator_keys() {
     password="$(<"${password_file}")"
     [[ -n "${validator_deposit_amount}" ]] \
         || fail "--amount is required when generating new validator keys."
-    deposit_amount="$(jq -nr --argjson value "${validator_deposit_amount}" \
-        '$value | select(type == "number" and . > 0) | tostring')" \
-        || fail "--amount must be a positive number."
-    [[ -n "${deposit_amount}" ]] || fail "--amount must be a positive number."
+    deposit_amount="${validator_deposit_amount}"
     jq -e \
-        --arg chain "${chain_name}" \
-        --argjson amount "${deposit_amount}" '
+        --arg chain "${chain_name}" '
             type == "object"
             and (keys | sort) == ([
                 "network_name",
@@ -1766,6 +1807,7 @@ function generate_validator_keys() {
                 "exit_fork_version",
                 "genesis_validator_root",
                 "multiplier",
+                "divisor",
                 "min_activation_amount",
                 "min_deposit_amount"
             ] | sort)
@@ -1773,13 +1815,53 @@ function generate_validator_keys() {
             and (.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
             and (.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
             and (.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
-            and (.multiplier | type == "number" and . > 0)
-            and (.min_activation_amount | type == "number" and . > 0)
-            and (.min_deposit_amount | type == "number" and . > 0)
-            and $amount >= .min_activation_amount
+            and (.multiplier | type == "number" and . > 0 and . == floor and . <= 9007199254740991)
+            and (.divisor | type == "number" and . > 0 and . == floor and . <= 9007199254740991)
+            and (.min_activation_amount | type == "number" and . > 0 and . == floor and . <= 9007199)
+            and (.min_deposit_amount | type == "number" and . > 0 and . == floor and . <= 9007199)
+            and .min_activation_amount >= .min_deposit_amount
         ' "${share_dir}/deposit-settings.json" >/dev/null \
         || fail "--amount does not satisfy ${share_dir}/deposit-settings.json."
     chain_setting="$(jq -c '.' "${share_dir}/deposit-settings.json")"
+    amount_multiplier="$(jq -r '.multiplier' <<<"${chain_setting}")"
+    amount_divisor="$(jq -r '.divisor' <<<"${chain_setting}")"
+    parse_whole_token_amount_to_gwei "--amount" "${deposit_amount}"
+    public_amount_gwei="${parsed_gwei}"
+    (( public_amount_gwei % amount_divisor == 0 )) \
+        || fail "--amount cannot be represented exactly with the published Deposit conversion."
+    cli_amount_gwei=$((public_amount_gwei / amount_divisor))
+    (( cli_amount_gwei <= max_exact_integer / amount_multiplier )) \
+        || fail "--amount is too large after applying the published Deposit conversion."
+    expected_deposit_gwei=$((cli_amount_gwei * amount_multiplier))
+    parse_whole_token_amount_to_gwei \
+        "Published minimum activation amount" \
+        "$(jq -r '.min_activation_amount' <<<"${chain_setting}")"
+    public_minimum_activation_gwei="${parsed_gwei}"
+    (( public_minimum_activation_gwei % amount_divisor == 0 )) \
+        || fail "Published minimum activation amount cannot be represented exactly."
+    cli_minimum_activation_gwei=$((public_minimum_activation_gwei / amount_divisor))
+    (( public_amount_gwei >= public_minimum_activation_gwei )) \
+        || fail "--amount must be at least $(jq -r '.min_activation_amount' <<<"${chain_setting}")."
+    parse_whole_token_amount_to_gwei \
+        "Published minimum Deposit amount" \
+        "$(jq -r '.min_deposit_amount' <<<"${chain_setting}")"
+    public_minimum_deposit_gwei="${parsed_gwei}"
+    (( public_minimum_deposit_gwei % amount_divisor == 0 )) \
+        || fail "Published minimum Deposit amount cannot be represented exactly."
+    cli_minimum_deposit_gwei=$((public_minimum_deposit_gwei / amount_divisor))
+    format_gwei_amount "${cli_amount_gwei}"
+    cli_deposit_amount="${formatted_amount}"
+    format_gwei_amount "${cli_minimum_activation_gwei}"
+    cli_minimum_activation_amount="${formatted_amount}"
+    format_gwei_amount "${cli_minimum_deposit_gwei}"
+    cli_minimum_deposit_amount="${formatted_amount}"
+    deposit_cli_chain_setting="$(jq -c \
+        --argjson min_activation_amount "${cli_minimum_activation_amount}" \
+        --argjson min_deposit_amount "${cli_minimum_deposit_amount}" '
+            del(.divisor)
+            | .min_activation_amount = $min_activation_amount
+            | .min_deposit_amount = $min_deposit_amount
+        ' <<<"${chain_setting}")"
 
     if [[ "${deployment_mode}" == "binary" ]]; then
         local generation_dir
@@ -1796,8 +1878,8 @@ function generate_validator_keys() {
             --num_validators="${validator_count}" \
             --withdrawal_address="${withdrawal_address}" \
             --compounding \
-            --amount="${deposit_amount}" \
-            --devnet_chain_setting="${chain_setting}" \
+            --amount="${cli_deposit_amount}" \
+            --devnet_chain_setting="${deposit_cli_chain_setting}" \
             "--folder=${generation_dir}"; then
             rm -rf -- "${generation_dir}"
             fail "EthStaker Deposit CLI failed to generate validator keys."
@@ -1821,17 +1903,33 @@ function generate_validator_keys() {
             --num_validators="${validator_count}" \
             --withdrawal_address="${withdrawal_address}" \
             --compounding \
-            --amount="${deposit_amount}" \
-            --devnet_chain_setting="${chain_setting}" \
+            --amount="${cli_deposit_amount}" \
+            --devnet_chain_setting="${deposit_cli_chain_setting}" \
             --folder=/app
     fi
 
     unset mnemonic password
     keystore_count="$(find "${keys_dir}" -maxdepth 1 -type f -name 'keystore-*.json' | wc -l | tr -d ' ')"
     [[ "${keystore_count}" -eq "${validator_count}" ]] || fail "Expected ${validator_count} keystores, found ${keystore_count}."
+    deposit_file="$(find "${keys_dir}" -maxdepth 1 -type f -name 'deposit_data-*.json' -print -quit)"
+    [[ -n "${deposit_file}" ]] || fail "EthStaker Deposit CLI did not create deposit data."
+    jq -e \
+        --arg chain "${chain_name}" \
+        --arg fork_version "$(jq -r '.genesis_fork_version' <<<"${chain_setting}")" \
+        --argjson expected_amount "${expected_deposit_gwei}" '
+            type == "array"
+            and length > 0
+            and all(.[];
+                .network_name == $chain
+                and (("0x" + (.fork_version | sub("^0x"; ""))) | ascii_downcase)
+                    == ($fork_version | ascii_downcase)
+                and .amount == $expected_amount
+            )
+        ' "${deposit_file}" >/dev/null \
+        || fail "Generated deposit data does not match ${share_dir}/deposit-settings.json."
 
     color "32" "Generated ${keystore_count} validator keys."
-    color "32" "Deposit data: $(find "${keys_dir}" -maxdepth 1 -name 'deposit_data-*.json' -print -quit)"
+    color "32" "Deposit data: ${deposit_file}"
     color "33" "Submit the deposit data before expecting the validators to activate."
     color "31" "Never share ${mnemonic_file}, ${password_file}, or validator keystores."
 }

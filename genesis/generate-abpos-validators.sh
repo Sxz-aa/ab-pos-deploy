@@ -13,6 +13,8 @@ readonly deposit_cli_image="${DEPOSIT_CLI_IMAGE:-ghcr.io/ethstaker/ethstaker-dep
 readonly deposit_cli_release_version="${DEPOSIT_CLI_RELEASE_VERSION:-latest}"
 readonly github_api_url="${GITHUB_API_URL:-https://api.github.com}"
 readonly default_release_repo="${ABPOS_RELEASE_REPO:-abdaodev/ab-pos-deploy}"
+readonly gwei_per_token=1000000000
+readonly max_exact_integer=9007199254740991
 
 deployment_mode="docker"
 deployment_mode_selected=false
@@ -70,8 +72,9 @@ Options:
       Use a local public settings file instead of a Release.
 
   --amount AMOUNT
-      Deposit amount for each generated validator. This is selected by the
-      Validator Operator and must satisfy the published Deposit CLI settings.
+      Positive whole-token Deposit amount for each generated validator. This
+      is selected by the Validator Operator and must satisfy the published
+      Deposit settings.
 
   --docker
       Generate keys with the Deposit CLI container. This is the default.
@@ -124,13 +127,13 @@ Outputs:
 Examples:
   ./generate-abpos-validators.sh \
     --release v1.0.0-rc.0 \
-    --amount 32 \
+    --amount 32000 \
     testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   ./generate-abpos-validators.sh --binary \
     --release v1.0.0-rc.0 \
-    --amount 32 \
+    --amount 32000 \
     testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
@@ -138,19 +141,19 @@ Examples:
     ABPOS_ROOT_PATH=/data/abcore/testnet-operator-a \
     ./generate-abpos-validators.sh \
     --deposit-settings ./deposit-settings.json \
-    --amount 32 \
+    --amount 32000 \
     testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   WITHDRAWAL_ADDRESS=0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332 \
     ./generate-abpos-validators.sh \
     --deposit-settings ./deposit-settings.json \
-    --amount 32 \
+    --amount 32000 \
     testnet
 
   ./generate-abpos-validators.sh \
     --deposit-settings ./deposit-settings.json \
-    --amount 32 \
+    --amount 32000 \
     abapp1 testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
@@ -163,6 +166,33 @@ USAGE
 function require_command() {
     command -v "$1" >/dev/null 2>&1 ||
         fail "Required command not found: $1"
+}
+
+parsed_gwei=""
+function parse_whole_token_amount_to_gwei() {
+    local label="$1"
+    local value="$2"
+
+    [[ "${value}" =~ ^[1-9][0-9]*$ ]] \
+        || fail "${label} must be a positive whole-token amount."
+    [[ "${#value}" -lt 7 \
+        || ( "${#value}" -eq 7 && "${value}" < "9007200" ) ]] \
+        || fail "${label} is too large."
+    parsed_gwei=$((value * gwei_per_token))
+}
+
+formatted_amount=""
+function format_gwei_amount() {
+    local value="$1"
+    local whole=$((value / gwei_per_token))
+    local fraction
+
+    printf -v fraction '%09d' "$((value % gwei_per_token))"
+    while [[ "${fraction}" == *0 ]]; do
+        fraction="${fraction%0}"
+    done
+    formatted_amount="${whole}"
+    [[ -z "${fraction}" ]] || formatted_amount+=".${fraction}"
 }
 
 function count_files() {
@@ -466,6 +496,7 @@ jq -e \
             "exit_fork_version",
             "genesis_validator_root",
             "multiplier",
+            "divisor",
             "min_activation_amount",
             "min_deposit_amount"
         ] | sort)
@@ -473,33 +504,58 @@ jq -e \
         and (.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
         and (.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
         and (.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
-        and (.multiplier | type == "number" and . > 0)
-        and (.min_activation_amount | type == "number" and . > 0)
-        and (.min_deposit_amount | type == "number" and . > 0)
+        and (.multiplier | type == "number" and . > 0 and . == floor and . <= 9007199254740991)
+        and (.divisor | type == "number" and . > 0 and . == floor and . <= 9007199254740991)
+        and (.min_activation_amount | type == "number" and . > 0 and . == floor and . <= 9007199)
+        and (.min_deposit_amount | type == "number" and . > 0 and . == floor and . <= 9007199)
         and .min_activation_amount >= .min_deposit_amount
     ' "${deposit_settings_file}" >/dev/null \
     || fail "Invalid deposit settings for ${chain_name}/${network}: ${deposit_settings_file}"
 readonly deposit_settings_file
-deposit_amount="$(jq -nr --argjson value "${deposit_amount}" \
-    '$value | select(type == "number" and . > 0) | tostring')" \
-    || fail "--amount must be a positive number."
-[[ -n "${deposit_amount}" ]] || fail "--amount must be a positive number."
 readonly deposit_amount
 readonly chain_setting="$(jq -c '.' "${deposit_settings_file}")"
-readonly expected_deposit_gwei="$(jq -nr \
-    --argjson amount "${deposit_amount}" \
-    --argjson multiplier "$(jq -r '.multiplier' <<<"${chain_setting}")" \
-    '$amount * $multiplier * 1000000000')"
-readonly minimum_activation_gwei="$(jq -nr \
-    --argjson amount "$(jq -r '.min_activation_amount' <<<"${chain_setting}")" \
-    --argjson multiplier "$(jq -r '.multiplier' <<<"${chain_setting}")" \
-    '$amount * $multiplier * 1000000000')"
-[[ "${expected_deposit_gwei}" =~ ^[1-9][0-9]*$ ]] \
-    || fail "--amount must produce a whole positive Gwei value."
-[[ "${minimum_activation_gwei}" =~ ^[1-9][0-9]*$ ]] \
-    || fail "Published minimum activation amount is invalid."
+readonly amount_multiplier="$(jq -r '.multiplier' <<<"${chain_setting}")"
+readonly amount_divisor="$(jq -r '.divisor' <<<"${chain_setting}")"
+parse_whole_token_amount_to_gwei "--amount" "${deposit_amount}"
+readonly public_amount_gwei="${parsed_gwei}"
+(( public_amount_gwei % amount_divisor == 0 )) \
+    || fail "--amount cannot be represented exactly with the published Deposit conversion."
+readonly cli_amount_gwei=$((public_amount_gwei / amount_divisor))
+(( cli_amount_gwei <= max_exact_integer / amount_multiplier )) \
+    || fail "--amount is too large after applying the published Deposit conversion."
+readonly expected_deposit_gwei=$((cli_amount_gwei * amount_multiplier))
+parse_whole_token_amount_to_gwei \
+    "Published minimum activation amount" \
+    "$(jq -r '.min_activation_amount' <<<"${chain_setting}")"
+readonly public_minimum_activation_gwei="${parsed_gwei}"
+(( public_minimum_activation_gwei % amount_divisor == 0 )) \
+    || fail "Published minimum activation amount cannot be represented exactly."
+readonly cli_minimum_activation_gwei=$((public_minimum_activation_gwei / amount_divisor))
+(( cli_minimum_activation_gwei <= max_exact_integer / amount_multiplier )) \
+    || fail "Published minimum activation amount is too large."
+readonly minimum_activation_gwei=$((cli_minimum_activation_gwei * amount_multiplier))
 (( expected_deposit_gwei >= minimum_activation_gwei )) \
     || fail "--amount must be at least $(jq -r '.min_activation_amount' <<<"${chain_setting}")."
+parse_whole_token_amount_to_gwei \
+    "Published minimum Deposit amount" \
+    "$(jq -r '.min_deposit_amount' <<<"${chain_setting}")"
+readonly public_minimum_deposit_gwei="${parsed_gwei}"
+(( public_minimum_deposit_gwei % amount_divisor == 0 )) \
+    || fail "Published minimum Deposit amount cannot be represented exactly."
+readonly cli_minimum_deposit_gwei=$((public_minimum_deposit_gwei / amount_divisor))
+format_gwei_amount "${cli_amount_gwei}"
+readonly cli_deposit_amount="${formatted_amount}"
+format_gwei_amount "${cli_minimum_activation_gwei}"
+readonly cli_minimum_activation_amount="${formatted_amount}"
+format_gwei_amount "${cli_minimum_deposit_gwei}"
+readonly cli_minimum_deposit_amount="${formatted_amount}"
+readonly deposit_cli_chain_setting="$(jq -c \
+    --argjson min_activation_amount "${cli_minimum_activation_amount}" \
+    --argjson min_deposit_amount "${cli_minimum_deposit_amount}" '
+        del(.divisor)
+        | .min_activation_amount = $min_activation_amount
+        | .min_deposit_amount = $min_deposit_amount
+    ' <<<"${chain_setting}")"
 readonly root_path="${ABPOS_ROOT_PATH:-/data/${chain_name}/${network}}"
 readonly keys_path="${root_path}/keys"
 readonly validator_keys_path="${keys_path}/validator_keys"
@@ -720,8 +776,8 @@ if [[ "${existing_file_count}" -eq 0 ]]; then
             --num_validators="${validator_count}" \
             --withdrawal_address="${withdrawal_address}" \
             --compounding \
-            --amount="${deposit_amount}" \
-            --devnet_chain_setting="${chain_setting}" \
+            --amount="${cli_deposit_amount}" \
+            --devnet_chain_setting="${deposit_cli_chain_setting}" \
             "--folder=${generation_dir}"; then
             rm -rf -- "${generation_dir}"
             fail "EthStaker Deposit CLI failed to generate validator keys."
@@ -749,8 +805,8 @@ if [[ "${existing_file_count}" -eq 0 ]]; then
             --num_validators="${validator_count}" \
             --withdrawal_address="${withdrawal_address}" \
             --compounding \
-            --amount="${deposit_amount}" \
-            --devnet_chain_setting="${chain_setting}" \
+            --amount="${cli_deposit_amount}" \
+            --devnet_chain_setting="${deposit_cli_chain_setting}" \
             --folder=/app
         normalize_legacy_output
     fi

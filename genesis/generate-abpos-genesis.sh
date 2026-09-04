@@ -7,10 +7,36 @@ set -euo pipefail
 # validator keystores, node deployment, bootnode discovery, or JWT secrets.
 
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly gwei_per_token=1000000000
+readonly max_exact_integer=9007199254740991
 
 function fail() {
     printf 'ERROR: %s\n' "$*" >&2
     exit 1
+}
+
+function require_safe_positive_integer() {
+    local label="$1"
+    local value="$2"
+
+    [[ "${value}" =~ ^[1-9][0-9]*$ ]] \
+        || fail "${label} must be a positive integer."
+    [[ "${#value}" -lt 16 \
+        || ( "${#value}" -eq 16 && "${value}" < "9007199254740992" ) ]] \
+        || fail "${label} is too large."
+}
+
+parsed_gwei=""
+function parse_whole_token_amount_to_gwei() {
+    local label="$1"
+    local value="$2"
+
+    [[ "${value}" =~ ^[1-9][0-9]*$ ]] \
+        || fail "${label} must be a positive whole-token amount."
+    [[ "${#value}" -lt 7 \
+        || ( "${#value}" -eq 7 && "${value}" < "9007200" ) ]] \
+        || fail "${label} is too large."
+    parsed_gwei=$((value * gwei_per_token))
 }
 
 function usage() {
@@ -147,6 +173,7 @@ readonly max_validator_gwei="${requested_max_validator_gwei:-${MAX_VALIDATOR_GWE
 readonly target_total_supply="${requested_target_total_supply:-${TARGET_TOTAL_SUPPLY:-}}"
 readonly supply_multiplier="${requested_supply_multiplier:-${SUPPLY_MULTIPLIER:-}}"
 readonly deposit_cli_multiplier="${requested_deposit_cli_multiplier:-${DEPOSIT_CLI_MULTIPLIER:-1}}"
+readonly deposit_amount_divisor="${supply_multiplier}"
 readonly min_deposit_amount="${requested_min_deposit_amount:-${MIN_DEPOSIT_AMOUNT:-1}}"
 readonly premine_address="${requested_premine_address:-${EL_PREMINE_ADDRESS:-0x161f5Ef2C0c1Be307CFeF2E7b1411E352a3Be01B}}"
 readonly base_fee_per_gas="${requested_base_fee_per_gas:-${EL_BASE_FEE_PER_GAS:-0x2D79883D2000}}"
@@ -180,19 +207,16 @@ readonly genesis_mnemonic
     || fail "NUMBER_OF_VALIDATORS must be a positive integer."
 [[ "${genesis_timestamp}" =~ ^[1-9][0-9]*$ ]] \
     || fail "GENESIS_TIMESTAMP must be a positive Unix timestamp."
-[[ "${min_validator_gwei}" =~ ^[0-9]+$ && "${max_validator_gwei}" =~ ^[0-9]+$ ]] \
-    || fail "Validator amount limits must be non-negative integers."
+require_safe_positive_integer "MIN_VALIDATOR_GWEI" "${min_validator_gwei}"
+require_safe_positive_integer "MAX_VALIDATOR_GWEI" "${max_validator_gwei}"
 (( min_validator_gwei <= max_validator_gwei )) \
     || fail "MIN_VALIDATOR_GWEI must not exceed MAX_VALIDATOR_GWEI."
 
-[[ "${target_total_supply}" =~ ^[1-9][0-9]*$ ]] \
-    || fail "TARGET_TOTAL_SUPPLY must be a positive integer."
-[[ "${supply_multiplier}" =~ ^[1-9][0-9]*$ ]] \
-    || fail "SUPPLY_MULTIPLIER must be a positive integer."
-[[ "${deposit_cli_multiplier}" =~ ^[1-9][0-9]*$ ]] \
-    || fail "DEPOSIT_CLI_MULTIPLIER must be a positive integer."
-[[ "${min_deposit_amount}" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] \
-    || fail "MIN_DEPOSIT_AMOUNT must be a non-negative number."
+require_safe_positive_integer "TARGET_TOTAL_SUPPLY" "${target_total_supply}"
+require_safe_positive_integer "SUPPLY_MULTIPLIER" "${supply_multiplier}"
+require_safe_positive_integer "DEPOSIT_CLI_MULTIPLIER" "${deposit_cli_multiplier}"
+[[ "${min_deposit_amount}" =~ ^[1-9][0-9]*$ ]] \
+    || fail "MIN_DEPOSIT_AMOUNT must be a positive whole-token amount."
 [[ "${premine_address}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
     || fail "EL_PREMINE_ADDRESS is invalid: ${premine_address}"
 [[ "${base_fee_per_gas}" =~ ^0x[0-9a-fA-F]+$ ]] \
@@ -211,16 +235,21 @@ readonly genesis_mnemonic
     || fail "CAPELLA_FORK_VERSION is invalid in ${config_dir}/values.env."
 [[ "${DEPOSIT_CONTRACT_ADDRESS:-}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
     || fail "DEPOSIT_CONTRACT_ADDRESS is invalid in ${config_dir}/values.env."
-min_activation_amount="$(jq -nr \
-    --argjson amount_gwei "${min_validator_gwei}" \
-    --argjson multiplier "${deposit_cli_multiplier}" \
-    '$amount_gwei / 1000000000 / $multiplier')"
+(( min_validator_gwei <= max_exact_integer / deposit_amount_divisor )) \
+    || fail "MIN_VALIDATOR_GWEI and SUPPLY_MULTIPLIER produce an amount that is too large."
+min_activation_numerator=$((min_validator_gwei * deposit_amount_divisor))
+(( min_activation_numerator % deposit_cli_multiplier == 0 )) \
+    || fail "The minimum activation amount cannot be represented exactly in native-token Gwei."
+min_activation_public_gwei=$((min_activation_numerator / deposit_cli_multiplier))
+(( min_activation_public_gwei % gwei_per_token == 0 )) \
+    || fail "The minimum activation amount must be a whole native-token amount."
+min_activation_amount=$((min_activation_public_gwei / gwei_per_token))
 readonly min_activation_amount
-jq -en \
-    --argjson min_activation_amount "${min_activation_amount}" \
-    --argjson min_deposit_amount "${min_deposit_amount}" \
-    '$min_activation_amount >= $min_deposit_amount
-        and $min_deposit_amount > 0' >/dev/null \
+parse_whole_token_amount_to_gwei "MIN_DEPOSIT_AMOUNT" "${min_deposit_amount}"
+min_deposit_public_gwei="${parsed_gwei}"
+(( min_deposit_public_gwei % deposit_amount_divisor == 0 )) \
+    || fail "MIN_DEPOSIT_AMOUNT cannot be represented exactly with SUPPLY_MULTIPLIER."
+(( min_activation_public_gwei >= min_deposit_public_gwei )) \
     || fail "Deposit amount settings are inconsistent."
 
 function write_deposit_settings() {
@@ -233,6 +262,7 @@ function write_deposit_settings() {
         --arg exit_fork_version "${CAPELLA_FORK_VERSION}" \
         --arg genesis_validator_root "${validators_root}" \
         --argjson multiplier "${deposit_cli_multiplier}" \
+        --argjson divisor "${deposit_amount_divisor}" \
         --argjson min_activation_amount "${min_activation_amount}" \
         --argjson min_deposit_amount "${min_deposit_amount}" \
         '{
@@ -241,6 +271,7 @@ function write_deposit_settings() {
             exit_fork_version: $exit_fork_version,
             genesis_validator_root: $genesis_validator_root,
             multiplier: $multiplier,
+            divisor: $divisor,
             min_activation_amount: $min_activation_amount,
             min_deposit_amount: $min_deposit_amount
         }' > "${destination}"
@@ -261,6 +292,7 @@ if [[ "${genesis_mode}" == "deposit-data" ]]; then
         --arg genesis_fork_version "${GENESIS_FORK_VERSION}" \
         --arg exit_fork_version "${CAPELLA_FORK_VERSION}" \
         --argjson multiplier "${deposit_cli_multiplier}" \
+        --argjson divisor "${deposit_amount_divisor}" \
         --argjson min_activation_amount "${min_activation_amount}" \
         --argjson min_deposit_amount "${min_deposit_amount}" '
             . == {
@@ -269,6 +301,7 @@ if [[ "${genesis_mode}" == "deposit-data" ]]; then
                 exit_fork_version: $exit_fork_version,
                 genesis_validator_root: "0x0000000000000000000000000000000000000000000000000000000000000000",
                 multiplier: $multiplier,
+                divisor: $divisor,
                 min_activation_amount: $min_activation_amount,
                 min_deposit_amount: $min_deposit_amount
             }

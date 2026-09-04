@@ -289,6 +289,7 @@ function validate_network() {
                 "exit_fork_version",
                 "genesis_validator_root",
                 "multiplier",
+                "divisor",
                 "min_activation_amount",
                 "min_deposit_amount"
             ] | sort)
@@ -296,9 +297,10 @@ function validate_network() {
             and (.genesis_fork_version | test("^0x[0-9a-fA-F]{8}$"))
             and (.exit_fork_version | test("^0x[0-9a-fA-F]{8}$"))
             and (.genesis_validator_root | test("^0x[0-9a-fA-F]{64}$"))
-            and (.multiplier | type == "number" and . > 0)
-            and (.min_activation_amount | type == "number" and . > 0)
-            and (.min_deposit_amount | type == "number" and . > 0)
+            and (.multiplier | type == "number" and . > 0 and . == floor and . <= 9007199254740991)
+            and (.divisor | type == "number" and . > 0 and . == floor and . <= 9007199254740991)
+            and (.min_activation_amount | type == "number" and . > 0 and . == floor and . <= 9007199)
+            and (.min_deposit_amount | type == "number" and . > 0 and . == floor and . <= 9007199)
             and .min_activation_amount >= .min_deposit_amount
         ' "${target_share_dir}/deposit-settings.json" >/dev/null \
         || fail "deposit-settings.json is invalid for ${target_chain}/${target_network}"
