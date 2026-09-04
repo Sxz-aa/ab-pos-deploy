@@ -5,7 +5,7 @@ set -euo pipefail
 # Generate AB PoS genesis validator keys and deposit data from reviewed public
 # network settings supplied by the Network Operator.
 
-readonly validator_count="${VALIDATOR_COUNT:-1000}"
+validator_count="${VALIDATOR_COUNT:-1000}"
 readonly validator_start_index=0
 readonly host_uid="${SUDO_UID:-$(id -u)}"
 readonly host_gid="${SUDO_GID:-$(id -g)}"
@@ -25,6 +25,7 @@ settings_release_repo="${default_release_repo}"
 settings_release_url=""
 settings_download_dir=""
 deposit_amount="${VALIDATOR_DEPOSIT_AMOUNT:-}"
+docker_command=(docker)
 
 function color() {
     # Usage: color "31;5" "message"
@@ -75,6 +76,9 @@ Options:
       Positive whole-token Deposit amount for each generated validator. This
       is selected by the Validator Operator and must satisfy the published
       Deposit settings.
+
+  --validator-count COUNT
+      Number of validators to generate. Default: 1000.
 
   --docker
       Generate keys with the Deposit CLI container. This is the default.
@@ -127,13 +131,15 @@ Outputs:
 Examples:
   ./generate-abpos-validators.sh \
     --release v1.0.0-rc.0 \
-    --amount 32000 \
+    --validator-count 1000 \
+    --amount 2048000 \
     testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
   ./generate-abpos-validators.sh --binary \
     --release v1.0.0-rc.0 \
-    --amount 32000 \
+    --validator-count 1000 \
+    --amount 2048000 \
     testnet \
     0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
@@ -166,6 +172,85 @@ USAGE
 function require_command() {
     command -v "$1" >/dev/null 2>&1 ||
         fail "Required command not found: $1"
+}
+
+function install_missing_dependencies() {
+    local specification command_name package_name
+    local -a specifications=(
+        "find:findutils"
+        "jq:jq"
+        "mv:coreutils"
+        "openssl:openssl"
+        "rmdir:coreutils"
+    )
+    local -a packages=()
+    local -a privileged=()
+    local -A selected_packages=()
+
+    if [[ -z "${deposit_settings_file}" ]]; then
+        specifications+=("curl:curl" "sha256sum:coreutils" "tar:tar")
+    fi
+    if [[ "${deployment_mode}" == "docker" ]]; then
+        specifications+=("docker:docker.io")
+    else
+        specifications+=(
+            "curl:curl"
+            "install:coreutils"
+            "sha256sum:coreutils"
+            "tar:tar"
+        )
+    fi
+
+    for specification in "${specifications[@]}"; do
+        command_name="${specification%%:*}"
+        package_name="${specification#*:}"
+        command -v "${command_name}" >/dev/null 2>&1 && continue
+        [[ -n "${selected_packages[${package_name}]:-}" ]] && continue
+        selected_packages["${package_name}"]=1
+        packages+=("${package_name}")
+    done
+    [[ -s /etc/ssl/certs/ca-certificates.crt ]] \
+        || packages+=(ca-certificates)
+    (( ${#packages[@]} > 0 )) || return 0
+
+    [[ "$(uname -s)" == "Linux" ]] \
+        || fail "Automatic dependency installation supports Linux only."
+    command -v apt-get >/dev/null 2>&1 \
+        || fail "Missing dependencies: ${packages[*]}. Automatic installation requires apt-get."
+    if (( EUID != 0 )); then
+        command -v sudo >/dev/null 2>&1 \
+            || fail "Missing dependencies: ${packages[*]}. Install them as root."
+        privileged=(sudo)
+    fi
+
+    color "34" "Installing required packages: ${packages[*]}"
+    "${privileged[@]}" apt-get update
+    "${privileged[@]}" env DEBIAN_FRONTEND=noninteractive \
+        apt-get install -y "${packages[@]}"
+}
+
+function ensure_docker_available() {
+    local -a privileged=()
+
+    docker info >/dev/null 2>&1 && return 0
+    if (( EUID != 0 )); then
+        command -v sudo >/dev/null 2>&1 \
+            || fail "Docker is installed but the current user cannot access it."
+        privileged=(sudo)
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        "${privileged[@]}" systemctl enable --now docker >/dev/null 2>&1 || true
+    elif command -v service >/dev/null 2>&1; then
+        "${privileged[@]}" service docker start >/dev/null 2>&1 || true
+    fi
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+    if (( EUID != 0 )) && sudo docker info >/dev/null 2>&1; then
+        docker_command=(sudo docker)
+        return 0
+    fi
+    fail "Docker is unavailable or permission was denied."
 }
 
 parsed_gwei=""
@@ -410,6 +495,11 @@ while [[ "$#" -gt 0 ]]; do
             deposit_amount="$2"
             shift
             ;;
+        --validator-count)
+            [[ "$#" -ge 2 ]] || fail "--validator-count requires a value."
+            validator_count="$2"
+            shift
+            ;;
         -h | --help)
             usage
             exit 0
@@ -464,10 +554,10 @@ if [[ ! "${withdrawal_address}" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
 fi
 
 if [[ ! "${validator_count}" =~ ^[1-9][0-9]*$ ]]; then
-    fail "VALIDATOR_COUNT must be a positive integer."
+    fail "--validator-count must be a positive integer."
 fi
 
-readonly chain_name network
+readonly validator_count chain_name network
 settings_source_count=0
 [[ -z "${deposit_settings_file}" ]] || settings_source_count=$((settings_source_count + 1))
 [[ -z "${settings_release}" ]] || settings_source_count=$((settings_source_count + 1))
@@ -476,6 +566,7 @@ settings_source_count=0
     || fail "Specify exactly one of --release, --release-url, or --deposit-settings."
 [[ -n "${deposit_amount}" ]] \
     || fail "--amount is required. Choose the per-validator Deposit amount."
+install_missing_dependencies
 require_command jq
 if [[ -z "${deposit_settings_file}" ]]; then
     require_command curl
@@ -575,10 +666,7 @@ fi
 
 if [[ "${deployment_mode}" == "docker" ]]; then
     require_command docker
-    if ! docker info >/dev/null 2>&1; then
-        fail \
-            "Docker is unavailable or the current user does not have permission to access it."
-    fi
+    ensure_docker_available
 else
     require_command curl
     require_command install
@@ -731,7 +819,7 @@ if [[ "${existing_file_count}" -eq 0 ]]; then
                 --mnemonic_language=english \
                 "--output_file=${mnemonic_path}"
         else
-            docker run --rm \
+            "${docker_command[@]}" run --rm \
                 --tty \
                 --env TERM=xterm \
                 --user "${host_uid}:${host_gid}" \
@@ -789,7 +877,7 @@ if [[ "${existing_file_count}" -eq 0 ]]; then
         cp -a "${generated_keys_dir}/." "${validator_keys_path}/"
         rm -rf -- "${generation_dir}"
     else
-        docker run --rm \
+        "${docker_command[@]}" run --rm \
             --tty \
             --env TERM=xterm \
             --user "${host_uid}:${host_gid}" \

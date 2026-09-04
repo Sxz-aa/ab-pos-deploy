@@ -36,7 +36,6 @@ optional_immutable_files=(
     deposit_contract_block_hash.txt
     genesis_validators_root.txt
     deploy_block.txt
-    checkpoint_sync_urls.txt
 )
 
 for name in "${immutable_files[@]}"; do

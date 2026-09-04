@@ -12,6 +12,9 @@ The central security boundary is simple: each Validator Operator keeps all signi
 | `generate-abpos-genesis.sh` | Export Deposit settings, then build and verify execution and consensus genesis files | Network Operator | Before participation and after deposit collection |
 | `ab-pos.sh` | Download a network Release and deploy Geth, a beacon node, and optionally a validator client | Node and infrastructure operators | After a Release is published |
 
+On Debian and Ubuntu, each script installs missing runtime dependencies for
+its installation or generation command.
+
 `generate-abpos-validators.sh` does not build genesis files or deploy a node. `ab-pos.sh --genesis --validator` does not generate keys; it imports the same keys that were included in the genesis validator set.
 
 ## 2. Who does what
@@ -58,7 +61,7 @@ Network Operator
   -> mark the tested Final Release as latest for ordinary nodes
 ```
 
-## 4. Generate genesis validator material
+## 4. Prepare Genesis participation settings (Network Operator)
 
 Before any keys are generated, the Network Operator prepares the reviewed
 Genesis workspace and exports the public Deposit settings:
@@ -115,14 +118,15 @@ GitHub publishes `${CHAIN_NAME}-${NETWORK_NAME}-${participation_tag}.tar.gz`
 with only `deposit-settings.json` and its checksum. It does not build or
 publish AB Geth for `rc.0`.
 
-### 4.1 Prerequisites
+## 5. Generate Genesis validator material (Genesis Validator Operator)
 
-- Docker Engine when using the default Docker mode
-- `jq`
+### 5.1 Prerequisites
+
 - A confirmed 20-byte execution-layer withdrawal address
-- A secure backup location that is not inside this repository
+- A secure location outside this repository for backing up the mnemonic,
+  keystore password, and validator keystores
 
-### 4.2 Download and run the generator
+### 5.2 Download and run the generator
 
 ```bash
 participation_tag="v1.0.0-rc.0"
@@ -130,16 +134,16 @@ curl -fsSL \
   "https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/${participation_tag}/genesis/generate-abpos-validators.sh" |
 sudo bash -s -- \
   --release "${participation_tag}" \
-  --amount 32000 \
+  --validator-count 1000 \
+  --amount 2048000 \
   testnet \
   0x0000000000000000000000000000000000000000
 ```
 
 Replace the example withdrawal address before running the command.
-The Validator Operator selects the amount deposited for each generated
-validator, expressed in the network's native token. `--amount 32000` means
-32,000 AB and is the minimum activation amount in this example. Use another
-whole-token amount permitted by the Network Operator when appropriate.
+The command generates 1000 validators and deposits 2,048,000 AB for each one.
+With the published `divisor` of 1000, this equals 2,048 consensus-layer
+staking units per validator.
 
 To use the official EthStaker Deposit CLI binary instead of Docker:
 
@@ -150,7 +154,8 @@ curl -fsSL \
 sudo bash -s -- \
   --binary \
   --release "${participation_tag}" \
-  --amount 32000 \
+  --validator-count 1000 \
+  --amount 2048000 \
   testnet \
   0x0000000000000000000000000000000000000000
 ```
@@ -165,7 +170,7 @@ The generator uses:
 - `0x02` compounding withdrawal credentials
 - `/data/abcore/<network>` as the output root
 
-### 4.3 Generated files
+### 5.3 Generated files
 
 ```text
 /data/abcore/testnet/keys/
@@ -185,7 +190,7 @@ The generator uses:
 
 One deposit data file normally contains an array with many validator records. There is no requirement to create one deposit file per validator.
 
-### 4.4 Configuration
+### 5.4 Configuration
 
 ```bash
 VALIDATOR_COUNT=10 \
@@ -211,11 +216,7 @@ ABPOS_ROOT_PATH=/data/abcore/testnet-operator-a \
 
 Run `./generate-abpos-validators.sh --help` for the complete interface.
 
-### 4.5 Run the generator again
-
-If the output directory already contains a complete key set, the generator reuses it. If the existing files are incomplete or inconsistent, it stops without overwriting them.
-
-## 5. Deposit data handoff
+### 5.5 Submit Deposit Data
 
 Back up `mnemonic.txt`, `pwd.txt`, and all keystores before the handoff. Then provide only the deposit data file to the Network Operator through the approved secure channel.
 
@@ -226,13 +227,16 @@ jq 'length' /data/abcore/testnet/keys/validator_keys/deposit_data-*.json
 sha256sum /data/abcore/testnet/keys/validator_keys/deposit_data-*.json
 ```
 
-The Network Operator should record the submitting operator, expected validator count, file checksum, withdrawal address, and accepted network parameters without taking custody of any private key material.
-The Genesis builder validates every submitted amount against
-`MIN_ACTIVATION_AMOUNT` and `MAX_DEPOSIT_AMOUNT` and calculates total stake from
-the accepted Deposit Data; different operators do not need to select the same
-amount.
+## 6. Build the Genesis Candidate (Network Operator)
 
-## 6. Build the Genesis Candidate
+### 6.1 Record and validate accepted Deposit Data
+
+The Network Operator should record the submitting operator, expected validator
+count, file checksum, withdrawal address, and accepted network parameters
+without taking custody of any private key material. The Genesis builder
+validates every submitted amount against `MIN_ACTIVATION_AMOUNT` and
+`MAX_DEPOSIT_AMOUNT` and calculates total stake from the accepted Deposit Data;
+different operators do not need to select the same amount.
 
 The Network Operator must continue with the same reviewed configuration that
 produced the `rc.0` settings. Changing any Deposit parameter now makes the
@@ -246,6 +250,8 @@ Copy every accepted deposit data file into `validator-deposits`. Subdirectories 
 cp /secure/deposits/deposit_data-*.json \
   genesis/config/validator-deposits/
 ```
+
+### 6.2 Generate and export Genesis
 
 ```bash
 ./genesis/generate-abpos-genesis.sh
@@ -263,26 +269,23 @@ reviewing an expected difference.
 
 ```bash
 ./genesis/generate-abpos-genesis.sh --export
-
-source genesis/config/values.env
-chain="${CHAIN_NAME}"
-network="${NETWORK_NAME}"
-share_dir="${chain}/${network}/share"
-candidate_tag="v1.0.0-rc.1"
 ```
 
 `CHAIN_NAME` identifies the chain and is checked against the network name recorded in deposit data. `NETWORK_NAME` selects its environment, such as `testnet` or `mainnet`. `CONFIG_NAME` is their unique combined consensus configuration name.
 
+### 6.3 Publish the Candidate Release
+
 Commit the Candidate files and push a signed Candidate tag. GitHub publishes it as a Pre-release:
 
 ```bash
+candidate_tag="v1.0.0-rc.1"
 git add "${share_dir}"
-git commit -S -m "config: prepare ${chain}/${network} Genesis Candidate"
-git tag -s "${candidate_tag}" -m "AB PoS ${chain}/${network} Genesis Candidate ${candidate_tag}"
+git commit -S -m "config: prepare ${CHAIN_NAME}/${NETWORK_NAME} Genesis Candidate"
+git tag -s "${candidate_tag}" -m "AB PoS ${CHAIN_NAME}/${NETWORK_NAME} Genesis Candidate ${candidate_tag}"
 git push origin main "${candidate_tag}"
 ```
 
-## 7. Collect node information and publish the Final Release
+## 7. Start Candidate nodes and submit node information (Genesis Validator and Infrastructure Operators)
 
 Every Genesis Validator Operator starts the Candidate with the same keys used in the submitted deposit data:
 
@@ -319,32 +322,38 @@ Genesis node information:
 
 Send the displayed enode and ENR to the Network Operator. Never send files from `keys/` or `config/`.
 
-The Network Operator adds one consensus ENR per line to `bootstrap_nodes.txt` and one execution enode per line to `bootstrap_nodes_execution.txt`, then commits the lists and pushes the Final tag. GitHub Actions validates the files, builds the artifacts, and publishes the Release. Do not run the Genesis builder again or change any other generated network file.
+## 8. Publish the Final Release (Network Operator)
+
+The Network Operator adds one consensus ENR per line to `bootstrap_nodes.txt`,
+one execution enode per line to `bootstrap_nodes_execution.txt`, and the fixed
+Checkpoint endpoint to `checkpoint_sync_urls.txt`. Then commit these files and
+push the Final tag. GitHub Actions validates the files, builds the artifacts,
+and publishes the Release. Do not run the Genesis builder again or change any
+other generated network file.
 
 ```bash
-chain="abcore"
-network="testnet"
-share_dir="${chain}/${network}/share"
-
 vi "${share_dir}/bootstrap_nodes.txt"
 vi "${share_dir}/bootstrap_nodes_execution.txt"
+vi "${share_dir}/checkpoint_sync_urls.txt"
 
-make verify-bootnodes CHAIN="${chain}" NETWORK="${network}"
+make verify-bootnodes CHAIN="${CHAIN_NAME}" NETWORK="${NETWORK_NAME}"
 
 final_tag="v1.0.0"
 git add \
   "${share_dir}/bootstrap_nodes.txt" \
-  "${share_dir}/bootstrap_nodes_execution.txt"
-git commit -S -m "config: add ${chain}/${network} Genesis bootstrap nodes"
-git tag -s "${final_tag}" -m "AB PoS ${chain}/${network} ${final_tag}"
+  "${share_dir}/bootstrap_nodes_execution.txt" \
+  "${share_dir}/checkpoint_sync_urls.txt"
+git commit -S -m "config: finalize ${CHAIN_NAME}/${NETWORK_NAME} Genesis network"
+git tag -s "${final_tag}" -m "AB PoS ${CHAIN_NAME}/${NETWORK_NAME} ${final_tag}"
 git push origin main "${final_tag}"
 ```
 
 Run the live verification while every submitted node is online. It validates each signed ENR, performs a Discovery v5 ping and resolution, and completes an RLPx handshake with each execution node. The first run builds the local `devp2p` verification tool with Docker.
 
-When a matching Candidate Release exists, the Final Release workflow verifies that only the two node lists changed.
+When a matching Candidate Release exists, the Final Release workflow permits
+only the two node lists and Checkpoint endpoints to change.
 
-## 8. Start the Final network
+## 9. Restart nodes with the Final Release (Genesis Validator and Infrastructure Operators)
 
 After the Final Release is available, every Candidate participant reruns the same node command with the Final tag.
 
@@ -365,30 +374,17 @@ sudo bash ab-pos.sh testnet prysm geth \
   --genesis
 ```
 
-The installer preserves the chain data, imported validator wallet, fee recipient, JWT, and P2P identities. A fixed checkpoint endpoint may already be included in the Candidate and Final Releases even though it becomes usable only after the network finalizes.
+The installer preserves the chain data, imported validator wallet, fee
+recipient, JWT, and P2P identities.
 
-After finalization, verify the endpoint and test the Final Release without `--genesis`. Then mark that Release as the latest GitHub Release. No additional Release is required when its checkpoint URL is already correct.
+## 10. Verify the Final network and mark the Release as latest (Network Operator)
 
-If the checkpoint URL was absent or must change, add it and publish another stable Release:
+After the network finalizes, verify execution and consensus synchronization,
+peer connectivity, finality, Validator duties, and the Checkpoint endpoint.
+Then test the Final Release without `--genesis` and mark it as the latest
+GitHub Release.
 
-```bash
-chain="abcore"
-network="testnet"
-share_dir="${chain}/${network}/share"
-
-printf '%s\n' 'https://checkpoint.pos.testnet.ab.org' \
-  >"${share_dir}/checkpoint_sync_urls.txt"
-
-next_tag="v1.0.1"
-git add "${share_dir}/checkpoint_sync_urls.txt"
-git commit -S -m "config: publish ${chain}/${network} checkpoint endpoint"
-git tag -s "${next_tag}" -m "AB PoS ${chain}/${network} ${next_tag}"
-git push origin main "${next_tag}"
-```
-
-Use the verified checkpoint endpoint for the selected network. After testing the new Release, mark it as the latest GitHub Release.
-
-## 9. Security rules
+## 11. Security rules
 
 - Never commit or release mnemonics, passwords, keystores, node private keys, or slashing protection databases.
 - Never run one validator pubkey in two validator clients at the same time.
@@ -396,16 +392,3 @@ Use the verified checkpoint endpoint for the selected network. After testing the
 - Compare finalized roots from independent trusted sources before selecting a checkpoint.
 - Back up slashing protection data before moving validators.
 - Treat voluntary exit as irreversible for the exited validator index.
-
-## 10. Current boundaries
-
-This repository does not:
-
-- Decide which submitted deposit records are authorized for a production genesis.
-- Replace independent review of the generator image, Genesis source configuration, generated state, or supply calculation.
-- Send on-chain deposit transactions.
-- Generate or host checkpoints.
-- Enforce GPG verification of a Release.
-- Back up or migrate slashing protection data.
-- Assess whether a checkpoint provider is trustworthy.
-- Replace an audited Network Operator genesis build and review process.

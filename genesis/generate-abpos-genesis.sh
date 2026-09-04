@@ -10,10 +10,94 @@ readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly repository_dir="$(cd "${script_dir}/.." && pwd)"
 readonly gwei_per_token=1000000000
 readonly max_exact_integer=9007199254740991
+docker_command=(docker)
 
 function fail() {
     printf 'ERROR: %s\n' "$*" >&2
     exit 1
+}
+
+function install_missing_dependencies() {
+    local specification command_name package_name
+    local -a specifications=("jq:jq" "awk:mawk")
+    local -a packages=()
+    local -a privileged=()
+    local -A selected_packages=()
+
+    if [[ "${prepare_deposit_settings}" == false && "${export_output}" == false ]]; then
+        specifications+=(
+            "docker:docker.io"
+            "sort:coreutils"
+            "diff:diffutils"
+        )
+    fi
+    if [[ "${export_output}" == true ]]; then
+        specifications+=(
+            "cmp:diffutils"
+            "find:findutils"
+            "install:coreutils"
+            "sort:coreutils"
+        )
+    fi
+
+    for specification in "${specifications[@]}"; do
+        command_name="${specification%%:*}"
+        package_name="${specification#*:}"
+        command -v "${command_name}" >/dev/null 2>&1 && continue
+        [[ -n "${selected_packages[${package_name}]:-}" ]] && continue
+        selected_packages["${package_name}"]=1
+        packages+=("${package_name}")
+    done
+    (( ${#packages[@]} > 0 )) || return 0
+
+    [[ "$(uname -s)" == "Linux" ]] \
+        || fail "Automatic dependency installation supports Linux only."
+    command -v apt-get >/dev/null 2>&1 \
+        || fail "Missing dependencies: ${packages[*]}. Automatic installation requires apt-get."
+    if (( EUID != 0 )); then
+        command -v sudo >/dev/null 2>&1 \
+            || fail "Missing dependencies: ${packages[*]}. Install them as root."
+        privileged=(sudo)
+    fi
+
+    printf 'Installing required packages: %s\n' "${packages[*]}"
+    "${privileged[@]}" apt-get update
+    "${privileged[@]}" env DEBIAN_FRONTEND=noninteractive \
+        apt-get install -y "${packages[@]}"
+}
+
+function ensure_docker_available() {
+    local -a privileged=()
+
+    docker info >/dev/null 2>&1 && return 0
+    if (( EUID != 0 )); then
+        command -v sudo >/dev/null 2>&1 \
+            || fail "Docker is installed but the current user cannot access it."
+        privileged=(sudo)
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        "${privileged[@]}" systemctl enable --now docker >/dev/null 2>&1 || true
+    elif command -v service >/dev/null 2>&1; then
+        "${privileged[@]}" service docker start >/dev/null 2>&1 || true
+    fi
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+    if (( EUID != 0 )) && sudo docker info >/dev/null 2>&1; then
+        docker_command=(sudo docker)
+        return 0
+    fi
+    fail "Docker is unavailable or permission was denied."
+}
+
+function display_path() {
+    local path="$1"
+
+    if [[ "${path}" == "${repository_dir}/"* ]]; then
+        printf '%s' "${path#"${repository_dir}/"}"
+    else
+        printf '%s' "${path}"
+    fi
 }
 
 function require_safe_positive_integer() {
@@ -178,6 +262,8 @@ readonly requested_config_name="${GENESIS_CONFIG_NAME:-}"
 readonly requested_chain_name="${CHAIN_NAME:-}"
 readonly requested_network_name="${NETWORK_NAME:-}"
 
+install_missing_dependencies
+
 required_commands=(jq awk)
 if [[ "${prepare_deposit_settings}" == false && "${export_output}" == false ]]; then
     required_commands+=(docker sort diff)
@@ -189,6 +275,10 @@ for command_name in "${required_commands[@]}"; do
     command -v "${command_name}" >/dev/null 2>&1 \
         || fail "Required command not found: ${command_name}"
 done
+
+if [[ "${prepare_deposit_settings}" == false && "${export_output}" == false ]]; then
+    ensure_docker_available
+fi
 
 for required_file in values.env el/genesis-config.yaml cl/config.yaml cl/mnemonics.yaml; do
     [[ -s "${config_dir}/${required_file}" ]] \
@@ -318,7 +408,7 @@ function create_participation_settings() {
     local zero_validators_root="0x0000000000000000000000000000000000000000000000000000000000000000"
 
     write_deposit_settings "${destination}" "${zero_validators_root}"
-    printf 'Created Genesis participation settings: %s\n' "${destination}"
+    printf 'Created Genesis participation settings: %s\n' "$(display_path "${destination}")"
     cat "${destination}"
 }
 
@@ -330,6 +420,9 @@ function export_files() {
     local target_file
     local file_name
     local node_list
+    local conflict_index
+    local -a conflicting_sources=()
+    local -a conflicting_targets=()
     shift 2
 
     (( "$#" > 0 )) || fail "No ${description} files are available to export."
@@ -342,10 +435,20 @@ function export_files() {
         file_name="$(basename "${source_file}")"
         target_file="${share_dir}/${file_name}"
         if [[ -e "${target_file}" ]] && ! cmp -s "${source_file}" "${target_file}"; then
-            [[ "${force_export}" == true ]] \
-                || fail "Export target differs: ${target_file}. Review it, then rerun with --force to replace it."
+            conflicting_sources+=("$(display_path "${source_file}")")
+            conflicting_targets+=("$(display_path "${target_file}")")
         fi
     done
+
+    if (( ${#conflicting_sources[@]} > 0 )) && [[ "${force_export}" == false ]]; then
+        printf 'ERROR: Generated Genesis files differ from existing export targets:\n' >&2
+        for conflict_index in "${!conflicting_sources[@]}"; do
+            printf '\n  Generated: %s\n' "${conflicting_sources[conflict_index]}" >&2
+            printf '  Existing:  %s\n' "${conflicting_targets[conflict_index]}" >&2
+        done
+        printf '\nNo files were exported. Review all differences, then rerun with --force to replace the existing files.\n' >&2
+        exit 1
+    fi
 
     mkdir -p "${share_dir}"
     for source_file in "$@"; do
@@ -366,7 +469,7 @@ function export_files() {
         done
     fi
 
-    printf 'Exported %s to: %s\n' "${description}" "${share_dir}"
+    printf 'Exported %s to: %s\n' "${description}" "$(display_path "${share_dir}")"
 }
 
 if [[ "${prepare_deposit_settings}" == true ]]; then
@@ -597,7 +700,7 @@ if [[ "${genesis_mode}" == "deposit-data" ]]; then
         >> "${runtime_values}"
 fi
 
-docker run --rm \
+"${docker_command[@]}" run --rm \
     -u "$(id -u):$(id -g)" \
     -v "${runtime_output_dir}:/data" \
     -v "${runtime_config_dir}:/config:ro" \
@@ -639,7 +742,7 @@ mv -f -- "${runtime_genesis}.tmp" "${runtime_genesis}"
 [[ "$(jq -r '.config.depositContractAddress | ascii_downcase' "${runtime_genesis}")" == "${DEPOSIT_CONTRACT_ADDRESS,,}" ]] \
     || fail "Generated execution genesis deposit contract address is incorrect."
 
-docker run --rm \
+"${docker_command[@]}" run --rm \
     -u "$(id -u):$(id -g)" \
     -v "${runtime_output_dir}:/data" \
     -v "${runtime_config_dir}:/config:ro" \

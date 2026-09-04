@@ -128,7 +128,7 @@ git tag -s v1.2.3 -m "AB PoS testnet v1.2.3"
 git push <github-remote> v1.2.3
 ```
 
-When a matching `v1.2.3-rc.NUMBER` Pre-release exists, the workflow downloads it and verifies that its Genesis, client configuration, and public Genesis metadata are byte-for-byte identical. The bootstrap node lists are the only files allowed to be completed between Candidate and Final. A matching Candidate is not required for an ordinary stable Release.
+When a matching `v1.2.3-rc.NUMBER` Pre-release exists, the workflow downloads it and verifies that its Genesis, client configuration, and public Genesis metadata are byte-for-byte identical. The bootstrap node lists and Checkpoint endpoints are the only files allowed to be completed between Candidate and Final. A matching Candidate is not required for an ordinary stable Release.
 
 ### Build another stable Release
 
