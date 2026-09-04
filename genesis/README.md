@@ -190,33 +190,7 @@ The generator uses:
 
 One deposit data file normally contains an array with many validator records. There is no requirement to create one deposit file per validator.
 
-### 5.4 Configuration
-
-```bash
-VALIDATOR_COUNT=10 \
-ABPOS_ROOT_PATH=/data/abcore/testnet-operator-a \
-./generate-abpos-validators.sh \
-  --deposit-settings ./deposit-settings.json \
-  --amount 32000 \
-  testnet \
-  0x0000000000000000000000000000000000000000
-```
-
-| Environment variable | Default | Purpose |
-| --- | --- | --- |
-| `WITHDRAWAL_ADDRESS` | None | Used when the positional address is omitted |
-| `VALIDATOR_COUNT` | `1000` | Number of validators to generate |
-| `VALIDATOR_DEPOSIT_AMOUNT` | None | Alternative to `--amount` |
-| `ABPOS_CHAIN_NAME` | `abcore` | Chain name used when it is omitted from the command |
-| `ABPOS_ROOT_PATH` | `/data/<chain>/<network>` | Network output directory |
-| `DEPOSIT_SETTINGS_FILE` | None | Alternative to `--deposit-settings` |
-| `ABPOS_RELEASE_REPO` | `abdaodev/ab-pos-deploy` | Repository used by `--release` |
-| `DEPOSIT_CLI_IMAGE` | `ghcr.io/ethstaker/ethstaker-deposit-cli:latest` | Deposit CLI container image used by `--docker` |
-| `DEPOSIT_CLI_RELEASE_VERSION` | `latest` | Deposit CLI Release tag used by `--binary` |
-
-Run `./generate-abpos-validators.sh --help` for the complete interface.
-
-### 5.5 Submit Deposit Data
+### 5.4 Submit Deposit Data
 
 Back up `mnemonic.txt`, `pwd.txt`, and all keystores before the handoff. Then provide only the deposit data file to the Network Operator through the approved secure channel.
 

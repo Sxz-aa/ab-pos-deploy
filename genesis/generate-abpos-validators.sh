@@ -90,6 +90,9 @@ Options:
       Show this help message and exit.
 
 Environment variables:
+  Command-line options take precedence over their equivalent environment
+  variables.
+
   ABPOS_CHAIN_NAME
       Chain name used when it is omitted from the command.
       Default: abcore
@@ -156,12 +159,6 @@ Examples:
     --deposit-settings ./deposit-settings.json \
     --amount 32000 \
     testnet
-
-  ./generate-abpos-validators.sh \
-    --deposit-settings ./deposit-settings.json \
-    --amount 32000 \
-    abapp1 testnet \
-    0x7EdC0CaDD6c20811058D4FB3EDA6F9218cCC7332
 
 Security:
   Share only deposit_data-*.json with the Network Operator.
