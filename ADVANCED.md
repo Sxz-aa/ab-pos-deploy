@@ -313,8 +313,7 @@ sudo ./ab-pos.sh testnet prysm geth \
   --genesis \
   --validator \
   --keys-dir /secure/validator_keys \
-  --password-file /secure/pwd.txt \
-  --fee-recipient 0x0000000000000000000000000000000000000000
+  --password-file /secure/pwd.txt
 ```
 
 Never run the same validator pubkey from two validator clients. Preserve the validator client data directory when upgrading because it contains slashing protection state.
@@ -331,11 +330,15 @@ Key generation, key import, and synchronization source are independent:
 | `--import-keys` | Import all keystores not already present and restart only the installed Validator Client. |
 | `--genesis` | Synchronize the node from Genesis. It does not generate or select keys. |
 
+When `--generate-keys --validator` produces only pubkeys that already exist in
+the local keys directory, an existing Validator wallet is not imported again.
+If the wallet is empty, the local keys are still imported.
+
 Key-generation options:
 
 | Option | Default | Behavior |
 | --- | --- | --- |
-| `--validator-count` | `1000` | Number of keys in the new batch. |
+| `--validator-count` | None | Required number of keys in the new batch. |
 | `--validator-start-index` | `0` | First derivation index used with the selected mnemonic. |
 | `--mnemonic-file` | `<data-dir>/keys/mnemonic.txt` | Reuse this mnemonic when it exists; otherwise create it. |
 | `--keys-dir` | `<data-dir>/keys/validator_keys` | Shared keystore and Deposit Data directory. For generation, its final component must be `validator_keys`. |
@@ -343,6 +346,18 @@ Key-generation options:
 | `--amount` | None | Required for generation. Positive whole-token Deposit amount per Validator. |
 | `--withdrawal-address` | None | Required for generation. Withdrawal address encoded in the new Deposit Data. |
 | `--fee-recipient` | Saved value | Required only when deploying the Validator Client and no saved value exists. |
+
+With an interactive terminal, the installer prompts for a missing Validator
+count, withdrawal address, per-validator Deposit amount, or first fee recipient.
+It also prompts when public IP detection fails or a non-Genesis Release has no
+Checkpoint URL. Withdrawal and fee-recipient addresses must not be the zero
+address. Non-interactive runs must supply these values explicitly. Missing keys,
+passwords, Release assets, and inconsistent node data remain hard errors.
+
+Before creating any key material, the installer displays the Validator count,
+start index, per-validator amount, total Deposit amount, withdrawal address, and
+mnemonic path. Interactive runs require explicit confirmation. After reviewing
+the same values, non-interactive automation must add `--yes`.
 
 Key-only generation reads `deposit-settings.json` from the latest Network
 Release by default. Use `--release` to pin a Release or `--deposit-settings`
@@ -355,8 +370,7 @@ sudo bash ab-pos.sh testnet \
   --generate-keys \
   --validator-count 1000 \
   --validator-start-index 1000 \
-  --amount 2048000 \
-  --withdrawal-address 0x0000000000000000000000000000000000000000
+  --amount 2048000
 ```
 
 To create a separate mnemonic, select another mnemonic filename. Its first
@@ -368,14 +382,13 @@ sudo bash ab-pos.sh testnet \
   --mnemonic-file /data/abcore/testnet/keys/mnemonic-2.txt \
   --validator-count 1000 \
   --validator-start-index 0 \
-  --amount 2048000 \
-  --withdrawal-address 0x0000000000000000000000000000000000000000
+  --amount 2048000
 ```
 
 Use one keystore password for all keystores in a shared key directory. The
 generator writes directly to that directory, checks only the new files, and
-removes the new batch if its pubkeys overlap existing keys. It does not store
-or infer the next derivation index.
+reports how many of its pubkeys overlap existing keys. The script does not
+store or infer the next derivation index.
 
 After key-only generation on an installed Validator node, import the batch:
 

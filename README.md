@@ -68,25 +68,18 @@ A validator deployment can generate a new key set and start the Validator Client
 
 ```bash
 sudo bash ab-pos.sh testnet prysm geth \
-  --generate-keys --validator \
-  --validator-count 1000 \
-  --amount 2048000 \
-  --withdrawal-address 0x0000000000000000000000000000000000000000 \
-  --fee-recipient 0x0000000000000000000000000000000000000000
+  --generate-keys --validator
 ```
 
 Lighthouse uses the same options:
 
 ```bash
 sudo bash ab-pos.sh testnet lighthouse geth \
-  --generate-keys --validator \
-  --validator-count 1000 \
-  --amount 2048000 \
-  --withdrawal-address 0x0000000000000000000000000000000000000000 \
-  --fee-recipient 0x0000000000000000000000000000000000000000
+  --generate-keys --validator
 ```
 
-Replace every example address before running either command.
+The installer asks for the validator count, per-validator Deposit amount,
+withdrawal address, and fee recipient, then displays a summary for confirmation.
 Use `--generate-keys` only when creating a new batch. On later node upgrades,
 repeat the command with `--validator` but without the key-generation options.
 

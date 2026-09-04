@@ -49,8 +49,8 @@ Arguments:
   consensus-client    prysm or lighthouse; detected for an installed node
   execution-client    geth; optional because Geth is currently the only choice
 
-On a first installation, omitting the consensus client opens an interactive
-Prysm/Lighthouse selection. Non-interactive installations must specify it.
+On an interactive installation, missing operator choices are requested from
+the terminal. Non-interactive installations must specify them explicitly.
 
 Node modes:
   Default              RPC node, synchronized from checkpoint
@@ -72,10 +72,10 @@ Validator behavior:
       Validator Client.
 
 Core options:
-  --withdrawal-address ADDRESS   Required when generating new validator keys
-  --amount AMOUNT                Whole-token Deposit amount when generating keys
-  --fee-recipient ADDRESS        Required only when no saved value exists
-  --validator-count NUMBER       Default: 1000
+  --withdrawal-address ADDRESS   Prompted when generating keys if omitted
+  --amount AMOUNT                Per-validator Deposit amount; prompted if omitted
+  --fee-recipient ADDRESS        Prompted when no saved value exists
+  --validator-count NUMBER       Number of keys; prompted if omitted
   --validator-start-index NUMBER Default: 0
   --mnemonic-file PATH           Default: <data-dir>/keys/mnemonic.txt
   --deposit-settings FILE        Public settings for key-only generation
@@ -90,7 +90,7 @@ Core options:
   --public-ip ADDRESS            Override Genesis node public IPv4 detection
   --docker                       Deploy containers; default
   --binary                       Deploy downloaded native binaries
-  --yes                          Skip non-destructive confirmation prompts
+  --yes                          Confirm key generation in non-interactive runs
   -h, --help                     Show this help
   --version                      Show script version
 
@@ -124,6 +124,71 @@ function require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
 }
 
+function interactive_terminal_available() {
+    [[ -t 1 && -r /dev/tty && -w /dev/tty ]]
+}
+
+function prompt_required_value() {
+    local variable_name="$1"
+    local prompt="$2"
+    local option_name="$3"
+    local value
+
+    interactive_terminal_available \
+        || fail "${option_name} is required in a non-interactive environment."
+    while true; do
+        printf '%s: ' "${prompt}" >/dev/tty
+        IFS= read -r value </dev/tty \
+            || fail "Unable to read ${prompt}."
+        if [[ -n "${value}" ]]; then
+            printf -v "${variable_name}" '%s' "${value}"
+            return 0
+        fi
+        printf 'A value is required.\n' >/dev/tty
+    done
+}
+
+function require_validator_count() {
+    local value="$1"
+
+    [[ "${value}" =~ ^[1-9][0-9]*$ ]] \
+        || fail "Validator count must be a positive integer."
+    [[ "${#value}" -lt 16 \
+        || ( "${#value}" -eq 16 && "${value}" < "9007199254740992" ) ]] \
+        || fail "Validator count is too large."
+}
+
+function is_address() {
+    [[ "$1" =~ ^0x[0-9a-fA-F]{40}$ \
+        && "${1,,}" != "0x0000000000000000000000000000000000000000" ]]
+}
+
+function prompt_address() {
+    local variable_name="$1"
+    local prompt="$2"
+    local option_name="$3"
+    local default_value="${4:-}"
+    local value
+
+    interactive_terminal_available \
+        || fail "${option_name} is required in a non-interactive environment."
+    while true; do
+        if [[ -n "${default_value}" ]]; then
+            printf '%s [%s]: ' "${prompt}" "${default_value}" >/dev/tty
+        else
+            printf '%s: ' "${prompt}" >/dev/tty
+        fi
+        IFS= read -r value </dev/tty \
+            || fail "Unable to read ${prompt}."
+        value="${value:-${default_value}}"
+        if is_address "${value}"; then
+            printf -v "${variable_name}" '%s' "${value}"
+            return 0
+        fi
+        printf 'Enter a non-zero, 0x-prefixed 20-byte address.\n' >/dev/tty
+    done
+}
+
 parsed_gwei=""
 function parse_whole_token_amount_to_gwei() {
     local label="$1"
@@ -149,6 +214,63 @@ function format_gwei_amount() {
     done
     formatted_amount="${whole}"
     [[ -z "${fraction}" ]] || formatted_amount+=".${fraction}"
+}
+
+function validate_key_generation_amount() {
+    local amount_gwei
+    local amount_multiplier
+    local amount_divisor
+    local cli_amount_gwei
+    local minimum_gwei
+
+    parse_whole_token_amount_to_gwei "--amount" "${validator_deposit_amount}"
+    amount_gwei="${parsed_gwei}"
+    amount_multiplier="$(jq -r '.multiplier' "${active_deposit_settings_file}")"
+    amount_divisor="$(jq -r '.divisor' "${active_deposit_settings_file}")"
+    (( amount_gwei % amount_divisor == 0 )) \
+        || fail "--amount cannot be represented exactly with the published Deposit conversion."
+    cli_amount_gwei=$((amount_gwei / amount_divisor))
+    (( cli_amount_gwei <= max_exact_integer / amount_multiplier )) \
+        || fail "--amount is too large after applying the published Deposit conversion."
+    parse_whole_token_amount_to_gwei \
+        "Published minimum activation amount" \
+        "$(jq -r '.min_activation_amount' "${active_deposit_settings_file}")"
+    minimum_gwei="${parsed_gwei}"
+    (( amount_gwei >= minimum_gwei )) \
+        || fail "--amount must be at least $(jq -r '.min_activation_amount' "${active_deposit_settings_file}")."
+}
+
+function confirm_validator_key_generation() {
+    local answer
+    local total_deposit_amount
+
+    (( validator_count <= max_exact_integer / validator_deposit_amount )) \
+        || fail "Validator count and --amount produce a total that is too large."
+    total_deposit_amount=$((validator_count * validator_deposit_amount))
+
+    printf '\nValidator key generation summary:\n'
+    printf '  Validator count:      %s\n' "${validator_count}"
+    printf '  Start index:          %s\n' "${validator_start_index}"
+    printf '  Amount per validator: %s native tokens\n' "${validator_deposit_amount}"
+    printf '  Total Deposit amount: %s native tokens\n' "${total_deposit_amount}"
+    printf '  Withdrawal address:   %s\n' "${withdrawal_address}"
+    printf '  Mnemonic file:        %s\n' "${mnemonic_file}"
+
+    if [[ "${assume_yes}" == true ]]; then
+        return 0
+    fi
+    interactive_terminal_available \
+        || fail "Non-interactive key generation requires --yes after reviewing the requested values."
+    printf '\nGenerate this validator batch? [y/N]: ' >/dev/tty
+    IFS= read -r answer </dev/tty \
+        || fail "Unable to read key generation confirmation."
+    case "${answer,,}" in
+        y | yes) ;;
+        *)
+            color "33" "Validator key generation cancelled."
+            exit 0
+            ;;
+    esac
 }
 
 function install_missing_dependencies() {
@@ -222,23 +344,51 @@ function ensure_docker_available() {
 function require_address() {
     local name="$1"
     local value="$2"
-    [[ "${value}" =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "Invalid ${name}: ${value}"
+
+    [[ "${value}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
+        || fail "Invalid ${name}: ${value}"
+    [[ "${value,,}" != "0x0000000000000000000000000000000000000000" ]] \
+        || fail "${name} must not be the zero address."
 }
 
-function require_ipv4_address() {
-    local name="$1"
-    local address="$2"
+function is_ipv4_address() {
+    local address="$1"
     local first
     local second
     local third
     local fourth
 
-    [[ "${address}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] \
-        || fail "Invalid ${name}: ${address}"
+    [[ "${address}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
     IFS=. read -r first second third fourth <<<"${address}"
     (( 10#${first} <= 255 && 10#${second} <= 255 \
-        && 10#${third} <= 255 && 10#${fourth} <= 255 )) \
-        || fail "Invalid ${name}: ${address}"
+        && 10#${third} <= 255 && 10#${fourth} <= 255 ))
+}
+
+function require_ipv4_address() {
+    local name="$1"
+    local address="$2"
+
+    is_ipv4_address "${address}" || fail "Invalid ${name}: ${address}"
+}
+
+function prompt_ipv4_address() {
+    local variable_name="$1"
+    local prompt="$2"
+    local option_name="$3"
+    local value
+
+    interactive_terminal_available \
+        || fail "${option_name} is required in a non-interactive environment."
+    while true; do
+        printf '%s: ' "${prompt}" >/dev/tty
+        IFS= read -r value </dev/tty \
+            || fail "Unable to read ${prompt}."
+        if is_ipv4_address "${value}"; then
+            printf -v "${variable_name}" '%s' "${value}"
+            return 0
+        fi
+        printf 'Enter a valid IPv4 address.\n' >/dev/tty
+    done
 }
 
 function detect_public_ipv4() {
@@ -288,6 +438,7 @@ execution_client=""
 genesis_mode=false
 validator_mode=false
 generate_keys=false
+generated_unique_validator_keys=0
 import_keys=false
 archive_mode=false
 operation="install"
@@ -314,7 +465,7 @@ password_file=""
 password_file_selected=false
 mnemonic_file=""
 deposit_settings_file=""
-validator_count="1000"
+validator_count=""
 validator_start_index="0"
 validator_deposit_amount="${VALIDATOR_DEPOSIT_AMOUNT:-}"
 assume_yes=false
@@ -436,7 +587,9 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-[[ "${validator_count}" =~ ^[1-9][0-9]*$ ]] || fail "Validator count must be a positive integer."
+if [[ -n "${validator_count}" ]]; then
+    require_validator_count "${validator_count}"
+fi
 [[ "${validator_start_index}" =~ ^[0-9]+$ ]] || fail "Validator start index must be a non-negative integer."
 [[ "${release_repo}" =~ ^[^/]+/[^/]+$ ]] || fail "Release repository must use OWNER/REPO format."
 
@@ -728,7 +881,10 @@ function validator_keys_are_imported() {
 }
 
 function validator_key_import_required() {
-    [[ "${generate_keys}" == true ]] || ! validator_keys_are_imported
+    if ! validator_keys_are_imported; then
+        return 0
+    fi
+    [[ "${generate_keys}" == true && "${generated_unique_validator_keys}" -gt 0 ]]
 }
 
 function save_local_setting() {
@@ -786,8 +942,13 @@ function resolve_saved_validator_settings() {
         detected_value="$(fee_recipient_from_existing_runtime)"
         fee_recipient="${detected_value}"
     fi
-    [[ -n "${fee_recipient}" ]] \
-        || fail "--fee-recipient is required for the first validator installation."
+    if [[ -z "${fee_recipient}" ]]; then
+        prompt_address \
+            fee_recipient \
+            "Validator fee recipient" \
+            "--fee-recipient" \
+            "${withdrawal_address}"
+    fi
     require_address "fee recipient" "${fee_recipient}"
     save_local_setting "${fee_recipient_file}" "${fee_recipient}" 0644
 
@@ -1380,19 +1541,35 @@ if [[ "${genesis_mode}" == true && "${key_generation_only}" == false ]]; then
         node_public_ip="${public_ip_override}"
     else
         require_command dig
-        node_public_ip="$(detect_public_ipv4)" \
-            || fail "Unable to detect the Genesis node public IPv4 address. Use --public-ip to specify it."
+        if ! node_public_ip="$(detect_public_ipv4)"; then
+            prompt_ipv4_address \
+                node_public_ip \
+                "Genesis node public IPv4 address" \
+                "--public-ip"
+        fi
     fi
     require_ipv4_address "public IPv4 address" "${node_public_ip}"
 fi
 
-if [[ "${validator_mode}" == true ]]; then
-    resolve_saved_validator_settings
+if [[ "${generate_keys}" == true ]]; then
+    if [[ -z "${withdrawal_address}" ]]; then
+        prompt_address \
+            withdrawal_address \
+            "Withdrawal address" \
+            "--withdrawal-address"
+    fi
+    require_address "withdrawal address" "${withdrawal_address}"
+    if [[ -z "${validator_count}" ]]; then
+        prompt_required_value \
+            validator_count \
+            "Number of validators" \
+            "--validator-count"
+    fi
+    require_validator_count "${validator_count}"
 fi
 
-if [[ "${generate_keys}" == true ]]; then
-    [[ -n "${withdrawal_address}" ]] || fail "--withdrawal-address is required with --generate-keys."
-    require_address "withdrawal address" "${withdrawal_address}"
+if [[ "${validator_mode}" == true ]]; then
+    resolve_saved_validator_settings
 fi
 
 mkdir -p "${share_dir}"
@@ -1929,6 +2106,16 @@ jq -e \
         and .min_activation_amount >= .min_deposit_amount
     ' "${active_deposit_settings_file}" >/dev/null \
     || fail "Invalid deposit settings for ${chain_name}/${network}."
+if [[ "${generate_keys}" == true && -z "${validator_deposit_amount}" ]]; then
+    prompt_required_value \
+        validator_deposit_amount \
+        "Deposit amount per validator in native tokens (minimum $(jq -r '.min_activation_amount' "${active_deposit_settings_file}"))" \
+        "--amount"
+fi
+if [[ "${generate_keys}" == true ]]; then
+    validate_key_generation_amount
+    confirm_validator_key_generation
+fi
 if [[ "${key_generation_only}" == false ]]; then
     settings_genesis_fork_version="$(jq -r \
         '.genesis_fork_version // empty' "${share_dir}/deposit-settings.json")"
@@ -1954,7 +2141,12 @@ if [[ "${key_generation_only}" == false ]]; then
 
     if [[ "${genesis_mode}" == false && -z "${checkpoint_url}" ]]; then
         checkpoint_url="$(first_data_line "${share_dir}/checkpoint_sync_urls.txt")"
-        [[ -n "${checkpoint_url}" ]] || fail "A non-genesis node requires --checkpoint-url or checkpoint_sync_urls.txt."
+        if [[ -z "${checkpoint_url}" ]]; then
+            prompt_required_value \
+                checkpoint_url \
+                "Trusted checkpoint URL" \
+                "--checkpoint-url"
+        fi
     fi
 fi
 
@@ -2060,6 +2252,9 @@ function generate_validator_keys() {
     local file
     local pubkey
     local generation_status=0
+    local mnemonic_status=0
+    local deposit_cli_log
+    local duplicate_pubkey_count=0
     local mnemonic_directory
     local mnemonic_basename
     local -a before_files=()
@@ -2118,24 +2313,35 @@ function generate_validator_keys() {
     fi
 
     if [[ ! -s "${mnemonic_file}" ]]; then
+        deposit_cli_log="$(mktemp "${keys_parent}/.deposit-cli-mnemonic.XXXXXX")"
+        color "34" "Generating a validator mnemonic."
         if [[ "${deployment_mode}" == "binary" ]]; then
             "${bin_dir}/deposit" \
                 --non_interactive --ignore_connectivity --language english \
                 generate-mnemonic \
                 --mnemonic_language=english \
-                "--output_file=${mnemonic_file}"
+                "--output_file=${mnemonic_file}" \
+                >"${deposit_cli_log}" 2>&1 || mnemonic_status=$?
         else
             mnemonic_directory="$(dirname "${mnemonic_file}")"
             mnemonic_basename="$(basename "${mnemonic_file}")"
-            docker run --rm --tty --env TERM=xterm \
+            docker run --rm \
                 --user "${host_uid}:${host_gid}" \
                 -v "${mnemonic_directory}:/app/mnemonic" \
                 "${deposit_cli_image}" \
                 --non_interactive --ignore_connectivity --language english \
                 generate-mnemonic \
                 --mnemonic_language=english \
-                "--output_file=/app/mnemonic/${mnemonic_basename}"
+                "--output_file=/app/mnemonic/${mnemonic_basename}" \
+                >"${deposit_cli_log}" 2>&1 || mnemonic_status=$?
         fi
+        if (( mnemonic_status != 0 )); then
+            printf 'EthStaker Deposit CLI output:\n' >&2
+            tail -n 100 "${deposit_cli_log}" >&2 || true
+            rm -f -- "${deposit_cli_log}" "${mnemonic_file}"
+            fail "EthStaker Deposit CLI failed while generating the mnemonic."
+        fi
+        rm -f -- "${deposit_cli_log}"
         chmod 600 "${mnemonic_file}"
     fi
 
@@ -2210,6 +2416,7 @@ function generate_validator_keys() {
         ' <<<"${chain_setting}")"
 
     color "34" "Generating ${validator_count} validator key(s) from index ${validator_start_index}."
+    deposit_cli_log="$(mktemp "${keys_parent}/.deposit-cli-keys.XXXXXX")"
     if [[ "${deployment_mode}" == "binary" ]]; then
         "${bin_dir}/deposit" \
             --non_interactive --ignore_connectivity --language english \
@@ -2222,9 +2429,10 @@ function generate_validator_keys() {
             --compounding \
             --amount="${cli_deposit_amount}" \
             --devnet_chain_setting="${deposit_cli_chain_setting}" \
-            "--folder=${keys_parent}" || generation_status=$?
+            "--folder=${keys_parent}" \
+            >"${deposit_cli_log}" 2>&1 || generation_status=$?
     else
-        docker run --rm --tty --env TERM=xterm \
+        docker run --rm \
             --user "${host_uid}:${host_gid}" \
             -v "${keys_dir}:/app/validator_keys" \
             "${deposit_cli_image}" \
@@ -2238,7 +2446,8 @@ function generate_validator_keys() {
             --compounding \
             --amount="${cli_deposit_amount}" \
             --devnet_chain_setting="${deposit_cli_chain_setting}" \
-            --folder=/app || generation_status=$?
+            --folder=/app \
+            >"${deposit_cli_log}" 2>&1 || generation_status=$?
     fi
 
     unset mnemonic password
@@ -2252,9 +2461,13 @@ function generate_validator_keys() {
     done < <(find "${keys_dir}" -maxdepth 1 -type f -print | sort)
 
     if (( generation_status != 0 )); then
+        printf 'EthStaker Deposit CLI output:\n' >&2
+        tail -n 100 "${deposit_cli_log}" >&2 || true
+        rm -f -- "${deposit_cli_log}"
         [[ "${#new_files[@]}" -eq 0 ]] || rm -f -- "${new_files[@]}"
         fail "EthStaker Deposit CLI failed; removed files from the incomplete batch."
     fi
+    rm -f -- "${deposit_cli_log}"
     if [[ "${#new_keystores[@]}" -ne "${validator_count}" \
         || "${#new_deposit_files[@]}" -ne 1 ]]; then
         [[ "${#new_files[@]}" -eq 0 ]] || rm -f -- "${new_files[@]}"
@@ -2264,11 +2477,15 @@ function generate_validator_keys() {
     for file in "${new_keystores[@]}"; do
         pubkey="$(jq -r '.pubkey // empty' "${file}" | tr '[:upper:]' '[:lower:]')"
         pubkey="${pubkey#0x}"
-        if [[ ! "${pubkey}" =~ ^[0-9a-f]{96}$ \
-            || -n "${existing_pubkeys[${pubkey}]:-}" \
-            || -n "${generated_pubkeys[${pubkey}]:-}" ]]; then
+        if [[ ! "${pubkey}" =~ ^[0-9a-f]{96}$ ]]; then
             rm -f -- "${new_files[@]}"
-            fail "Generated validator index overlaps an existing pubkey; removed the new batch. Choose another --validator-start-index or --mnemonic-file."
+            fail "Generated an invalid validator pubkey; removed the incomplete batch."
+        fi
+        if [[ -n "${existing_pubkeys[${pubkey}]:-}" \
+            || -n "${generated_pubkeys[${pubkey}]:-}" ]]; then
+            duplicate_pubkey_count=$((duplicate_pubkey_count + 1))
+        else
+            generated_unique_validator_keys=$((generated_unique_validator_keys + 1))
         fi
         generated_pubkeys["${pubkey}"]=1
     done
@@ -2307,6 +2524,9 @@ function generate_validator_keys() {
             "${new_files[@]}"
     fi
 
+    if (( duplicate_pubkey_count > 0 )); then
+        color "33" "WARNING: Duplicate validator pubkeys: ${duplicate_pubkey_count} of ${validator_count}."
+    fi
     color "32" "Generated ${validator_count} validator keys."
     color "32" "Mnemonic: ${mnemonic_file}"
     color "32" "Keystore password: ${password_file}"

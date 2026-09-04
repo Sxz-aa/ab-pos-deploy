@@ -139,11 +139,10 @@ sudo bash -s -- \
   --generate-keys \
   --release "${participation_tag}" \
   --validator-count 1000 \
-  --amount 2048000 \
-  --withdrawal-address 0x0000000000000000000000000000000000000000
+  --amount 2048000
 ```
 
-Replace the example withdrawal address before running the command.
+The installer asks for the withdrawal address.
 
 The example generates:
 
@@ -257,11 +256,10 @@ curl -fsSLO \
 sudo bash ab-pos.sh testnet prysm geth \
   --release "${candidate_tag}" \
   --genesis \
-  --validator \
-  --fee-recipient 0x0000000000000000000000000000000000000000
+  --validator
 ```
 
-Replace the example fee recipient before the first Validator installation.
+The installer asks for the fee recipient on the first Validator installation.
 
 Every Infrastructure Operator contributing a long-lived RPC node runs:
 
