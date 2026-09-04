@@ -1,8 +1,6 @@
 # AB PoS Genesis Participation and Release Guide
 
-This guide covers the pre-genesis workflow for Genesis Validator Operators, Infrastructure Operators, and Network Operators. It is intentionally separate from the public [post-genesis node deployment guide](../README.md).
-
-The central security boundary is simple: each Validator Operator keeps all signing material, while the Network Operator receives only public deposit data and publishes only public network material.
+This guide covers the pre-genesis workflow for Genesis Validator Operators, Infrastructure Operators, and Network Operators.
 
 ## 1. Scripts and lifecycle
 
