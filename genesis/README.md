@@ -21,7 +21,7 @@ its installation or generation command.
 
 | Participant | Responsibility |
 | --- | --- |
-| Genesis Validator Operator | Use the supplied Deposit settings to generate and back up validator keys, send `deposit_data-*.json`, then start the Candidate Release and return the displayed public enode and ENR. |
+| Genesis Validator Operator | Use the supplied Deposit settings to generate validator keys, back up the mnemonic, send `deposit_data-*.json`, then start the Candidate Release and return the displayed public enode and ENR. |
 | Infrastructure Operator | Start a long-lived public RPC node from the Candidate Release and return the displayed public enode and ENR. |
 | Network Operator | Build the Genesis Candidate, collect public node identities, publish the Final Genesis Release, and publish checkpoint URLs after finalization. |
 
@@ -37,7 +37,7 @@ Network Operator
 Genesis Validator Operator
   -> run the version-pinned generator command from the Network Operator
   -> generate mnemonic, password, keystores, and deposit data from rc.0
-  -> back up all private material
+  -> back up the mnemonic and keep all private material secret
   -> send only deposit_data-*.json
 
 Network Operator
@@ -123,8 +123,7 @@ publish AB Geth for `rc.0`.
 ### 5.1 Prerequisites
 
 - A confirmed 20-byte execution-layer withdrawal address
-- A secure location outside this repository for backing up the mnemonic,
-  keystore password, and validator keystores
+- A secure offline location for backing up the mnemonic
 
 ### 5.2 Download and run the generator
 
@@ -141,31 +140,12 @@ sudo bash -s -- \
 ```
 
 Replace the example withdrawal address before running the command.
-The command generates 1000 validators and deposits 2,048,000 AB for each one.
-With the published `divisor` of 1000, this equals 2,048 consensus-layer
-staking units per validator.
 
-To use the official EthStaker Deposit CLI binary instead of Docker:
-
-```bash
-participation_tag="v1.0.0-rc.0"
-curl -fsSL \
-  "https://raw.githubusercontent.com/abdaodev/ab-pos-deploy/${participation_tag}/genesis/generate-abpos-validators.sh" |
-sudo bash -s -- \
-  --binary \
-  --release "${participation_tag}" \
-  --validator-count 1000 \
-  --amount 2048000 \
-  testnet \
-  0x0000000000000000000000000000000000000000
-```
-
-The binary archive and its checksum are downloaded from the selected EthStaker Deposit CLI GitHub Release. The verified executable is installed under `<ABPOS_ROOT_PATH>/bin/`.
-
-The generator uses:
+The example generates:
 
 - 1000 validators
-- the per-validator Deposit amount selected with `--amount`
+- 2,048,000 AB per validator, equal to 2,048 consensus-layer staking units
+  with the published divisor of 1000
 - the public chain parameters from `deposit-settings.json`
 - `0x02` compounding withdrawal credentials
 - `/data/abcore/<network>` as the output root
@@ -192,7 +172,9 @@ One deposit data file normally contains an array with many validator records. Th
 
 ### 5.4 Submit Deposit Data
 
-Back up `mnemonic.txt`, `pwd.txt`, and all keystores before the handoff. Then provide only the deposit data file to the Network Operator through the approved secure channel.
+Back up `mnemonic.txt` before the handoff. Keep `pwd.txt` and all keystores
+private. Then provide only the deposit data file to the Network Operator
+through the approved secure channel.
 
 Useful local checks:
 
