@@ -15,6 +15,11 @@ The central security boundary is simple: each Validator Operator keeps all signi
 On Debian and Ubuntu, each script installs missing runtime dependencies for
 its installation or generation command.
 
+Genesis Validator Operators and Infrastructure Operators use Docker by default,
+or native binaries by passing `--binary` to `generate-abpos-validators.sh` or
+`ab-pos.sh`. Network Operators build Genesis with Docker only through
+`generate-abpos-genesis.sh`.
+
 `generate-abpos-validators.sh` does not build genesis files or deploy a node. `ab-pos.sh --genesis --validator` does not generate keys; it imports the same keys that were included in the genesis validator set.
 
 ## 2. Who does what
