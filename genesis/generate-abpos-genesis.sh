@@ -39,6 +39,23 @@ function parse_whole_token_amount_to_gwei() {
     parsed_gwei=$((value * gwei_per_token))
 }
 
+converted_consensus_gwei=""
+function convert_native_amount_to_consensus_gwei() {
+    local label="$1"
+    local value="$2"
+    local multiplier="$3"
+    local divisor="$4"
+    local numerator
+
+    parse_whole_token_amount_to_gwei "${label}" "${value}"
+    (( parsed_gwei <= max_exact_integer / multiplier )) \
+        || fail "${label} and DEPOSIT_AMOUNT_MULTIPLIER produce an amount that is too large."
+    numerator=$((parsed_gwei * multiplier))
+    (( numerator % divisor == 0 )) \
+        || fail "${label} cannot be represented exactly with the configured Deposit amount conversion."
+    converted_consensus_gwei=$((numerator / divisor))
+}
+
 function usage() {
     cat <<'USAGE'
 Usage:
@@ -130,13 +147,14 @@ readonly requested_target_total_supply="${TARGET_TOTAL_SUPPLY:-}"
 readonly requested_deposit_amount_multiplier="${DEPOSIT_AMOUNT_MULTIPLIER:-}"
 readonly requested_deposit_amount_divisor="${DEPOSIT_AMOUNT_DIVISOR:-}"
 readonly requested_min_deposit_amount="${MIN_DEPOSIT_AMOUNT:-}"
+readonly requested_min_activation_amount="${MIN_ACTIVATION_AMOUNT:-}"
+readonly requested_max_deposit_amount="${MAX_DEPOSIT_AMOUNT:-}"
+readonly requested_validator_balance="${VALIDATOR_BALANCE:-}"
 readonly requested_premine_address="${EL_PREMINE_ADDRESS:-}"
 readonly requested_base_fee_per_gas="${EL_BASE_FEE_PER_GAS:-}"
 readonly requested_config_name="${GENESIS_CONFIG_NAME:-}"
 readonly requested_chain_name="${CHAIN_NAME:-}"
 readonly requested_network_name="${NETWORK_NAME:-}"
-readonly requested_min_validator_gwei="${MIN_VALIDATOR_GWEI:-}"
-readonly requested_max_validator_gwei="${MAX_VALIDATOR_GWEI:-}"
 
 required_commands=(jq awk)
 if [[ "${prepare_deposit_settings}" == false ]]; then
@@ -168,12 +186,13 @@ readonly genesis_timestamp="${configured_genesis_timestamp}"
 readonly chain_name="${requested_chain_name:-${CHAIN_NAME:-abcore}}"
 readonly network_name="${requested_network_name:-${NETWORK_NAME:-testnet}}"
 readonly expected_deposit_network_name="${chain_name}"
-readonly min_validator_gwei="${requested_min_validator_gwei:-${MIN_VALIDATOR_GWEI:-32000000000}}"
-readonly max_validator_gwei="${requested_max_validator_gwei:-${MAX_VALIDATOR_GWEI:-2048000000000}}"
 readonly target_total_supply="${requested_target_total_supply:-${TARGET_TOTAL_SUPPLY:-}}"
 readonly deposit_amount_multiplier="${requested_deposit_amount_multiplier:-${DEPOSIT_AMOUNT_MULTIPLIER:-}}"
 readonly deposit_amount_divisor="${requested_deposit_amount_divisor:-${DEPOSIT_AMOUNT_DIVISOR:-}}"
-readonly min_deposit_amount="${requested_min_deposit_amount:-${MIN_DEPOSIT_AMOUNT:-1}}"
+readonly min_deposit_amount="${requested_min_deposit_amount:-${MIN_DEPOSIT_AMOUNT:-}}"
+readonly min_activation_amount="${requested_min_activation_amount:-${MIN_ACTIVATION_AMOUNT:-}}"
+readonly max_deposit_amount="${requested_max_deposit_amount:-${MAX_DEPOSIT_AMOUNT:-}}"
+readonly validator_balance="${requested_validator_balance:-${VALIDATOR_BALANCE:-}}"
 readonly premine_address="${requested_premine_address:-${EL_PREMINE_ADDRESS:-0x161f5Ef2C0c1Be307CFeF2E7b1411E352a3Be01B}}"
 readonly base_fee_per_gas="${requested_base_fee_per_gas:-${EL_BASE_FEE_PER_GAS:-0x2D79883D2000}}"
 readonly config_name="${requested_config_name:-${CONFIG_NAME:-${chain_name}-${network_name}}}"
@@ -206,16 +225,9 @@ readonly genesis_mnemonic
     || fail "NUMBER_OF_VALIDATORS must be a positive integer."
 [[ "${genesis_timestamp}" =~ ^[1-9][0-9]*$ ]] \
     || fail "GENESIS_TIMESTAMP must be a positive Unix timestamp."
-require_safe_positive_integer "MIN_VALIDATOR_GWEI" "${min_validator_gwei}"
-require_safe_positive_integer "MAX_VALIDATOR_GWEI" "${max_validator_gwei}"
-(( min_validator_gwei <= max_validator_gwei )) \
-    || fail "MIN_VALIDATOR_GWEI must not exceed MAX_VALIDATOR_GWEI."
-
 require_safe_positive_integer "TARGET_TOTAL_SUPPLY" "${target_total_supply}"
 require_safe_positive_integer "DEPOSIT_AMOUNT_MULTIPLIER" "${deposit_amount_multiplier}"
 require_safe_positive_integer "DEPOSIT_AMOUNT_DIVISOR" "${deposit_amount_divisor}"
-[[ "${min_deposit_amount}" =~ ^[1-9][0-9]*$ ]] \
-    || fail "MIN_DEPOSIT_AMOUNT must be a positive whole-token amount."
 [[ "${premine_address}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
     || fail "EL_PREMINE_ADDRESS is invalid: ${premine_address}"
 [[ "${base_fee_per_gas}" =~ ^0x[0-9a-fA-F]+$ ]] \
@@ -234,21 +246,20 @@ require_safe_positive_integer "DEPOSIT_AMOUNT_DIVISOR" "${deposit_amount_divisor
     || fail "CAPELLA_FORK_VERSION is invalid in ${config_dir}/values.env."
 [[ "${DEPOSIT_CONTRACT_ADDRESS:-}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
     || fail "DEPOSIT_CONTRACT_ADDRESS is invalid in ${config_dir}/values.env."
-(( min_validator_gwei <= max_exact_integer / deposit_amount_divisor )) \
-    || fail "MIN_VALIDATOR_GWEI and DEPOSIT_AMOUNT_DIVISOR produce an amount that is too large."
-min_activation_numerator=$((min_validator_gwei * deposit_amount_divisor))
-(( min_activation_numerator % deposit_amount_multiplier == 0 )) \
-    || fail "The minimum activation amount cannot be represented exactly in native-token Gwei."
-min_activation_public_gwei=$((min_activation_numerator / deposit_amount_multiplier))
-(( min_activation_public_gwei % gwei_per_token == 0 )) \
-    || fail "The minimum activation amount must be a whole native-token amount."
-min_activation_amount=$((min_activation_public_gwei / gwei_per_token))
-readonly min_activation_amount
-parse_whole_token_amount_to_gwei "MIN_DEPOSIT_AMOUNT" "${min_deposit_amount}"
-min_deposit_public_gwei="${parsed_gwei}"
-(( min_deposit_public_gwei % deposit_amount_divisor == 0 )) \
-    || fail "MIN_DEPOSIT_AMOUNT cannot be represented exactly with DEPOSIT_AMOUNT_DIVISOR."
-(( min_activation_public_gwei >= min_deposit_public_gwei )) \
+convert_native_amount_to_consensus_gwei \
+    "MIN_DEPOSIT_AMOUNT" "${min_deposit_amount}" \
+    "${deposit_amount_multiplier}" "${deposit_amount_divisor}"
+readonly min_deposit_consensus_gwei="${converted_consensus_gwei}"
+convert_native_amount_to_consensus_gwei \
+    "MIN_ACTIVATION_AMOUNT" "${min_activation_amount}" \
+    "${deposit_amount_multiplier}" "${deposit_amount_divisor}"
+readonly min_validator_consensus_gwei="${converted_consensus_gwei}"
+convert_native_amount_to_consensus_gwei \
+    "MAX_DEPOSIT_AMOUNT" "${max_deposit_amount}" \
+    "${deposit_amount_multiplier}" "${deposit_amount_divisor}"
+readonly max_validator_consensus_gwei="${converted_consensus_gwei}"
+(( min_deposit_consensus_gwei <= min_validator_consensus_gwei \
+    && min_validator_consensus_gwei <= max_validator_consensus_gwei )) \
     || fail "Deposit amount settings are inconsistent."
 
 function write_deposit_settings() {
@@ -308,16 +319,19 @@ if [[ "${genesis_mode}" == "deposit-data" ]]; then
         || fail "values.env no longer matches the published Genesis participation settings."
 fi
 if [[ "${genesis_mode}" == "mnemonic" ]]; then
-    [[ "${VALIDATOR_BALANCE_GWEI:-}" =~ ^[1-9][0-9]*$ ]] \
-        || fail "VALIDATOR_BALANCE_GWEI must be a positive integer in ${config_dir}/values.env."
-    (( VALIDATOR_BALANCE_GWEI >= min_validator_gwei \
-        && VALIDATOR_BALANCE_GWEI <= max_validator_gwei )) \
-        || fail "VALIDATOR_BALANCE_GWEI is outside the accepted validator range."
+    convert_native_amount_to_consensus_gwei \
+        "VALIDATOR_BALANCE" "${validator_balance}" \
+        "${deposit_amount_multiplier}" "${deposit_amount_divisor}"
+    validator_balance_consensus_gwei="${converted_consensus_gwei}"
+    (( validator_balance_consensus_gwei >= min_validator_consensus_gwei \
+        && validator_balance_consensus_gwei <= max_validator_consensus_gwei )) \
+        || fail "VALIDATOR_BALANCE is outside the accepted Deposit range."
     [[ "${WITHDRAWAL_ADDRESS:-}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
         || fail "WITHDRAWAL_ADDRESS is invalid in ${config_dir}/values.env."
     [[ "${WITHDRAWAL_TYPE:-}" =~ ^0x[0-9a-fA-F]{2}$ ]] \
         || fail "WITHDRAWAL_TYPE must contain exactly one byte in ${config_dir}/values.env."
 fi
+readonly validator_balance_consensus_gwei="${validator_balance_consensus_gwei:-0}"
 
 if [[ -d "${output_dir}" && -n "$(find "${output_dir}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
     fail "Output directory is not empty: ${output_dir}"
@@ -347,7 +361,6 @@ install -m 644 "${config_dir}/values.env" "${runtime_values}"
 install -m 644 "${config_dir}/el/genesis-config.yaml" "${runtime_config_dir}/el/genesis-config.yaml"
 install -m 644 "${config_dir}/cl/config.yaml" "${runtime_config_dir}/cl/config.yaml"
 install -m 644 "${config_dir}/cl/mnemonics.yaml" "${runtime_config_dir}/cl/mnemonics.yaml"
-
 if [[ "${genesis_mode}" == "deposit-data" ]]; then
     printf '[]\n' > "${runtime_config_dir}/cl/mnemonics.yaml"
 else
@@ -355,7 +368,7 @@ else
         '- mnemonic: "%s"\n  count: %s\n  balance: %s\n  wd_address: %s\n  wd_prefix: %s\n' \
         "${genesis_mnemonic}" \
         "${expected_validator_count}" \
-        "${VALIDATOR_BALANCE_GWEI}" \
+        "${validator_balance_consensus_gwei}" \
         "${WITHDRAWAL_ADDRESS}" \
         "${WITHDRAWAL_TYPE}" \
         > "${runtime_config_dir}/cl/mnemonics.yaml"
@@ -388,7 +401,7 @@ function prepare_genesis_deposits() {
     : > "${additional_validators}"
     : > "${pubkeys_file}"
     total_records=0
-    total_staked_gwei=0
+    total_staked_consensus_gwei=0
 
     for deposit_file in "${deposit_files[@]}"; do
         jq -e 'type == "array" and length > 0' "${deposit_file}" >/dev/null \
@@ -405,7 +418,8 @@ function prepare_genesis_deposits() {
                 || fail "Invalid withdrawal credentials in ${deposit_file} for ${pubkey}."
             [[ "${amount}" =~ ^[0-9]+$ ]] \
                 || fail "Invalid deposit amount in ${deposit_file} for ${pubkey}: ${amount}"
-            (( amount >= min_validator_gwei && amount <= max_validator_gwei )) \
+            (( amount >= min_validator_consensus_gwei \
+                && amount <= max_validator_consensus_gwei )) \
                 || fail "Deposit amount is outside the accepted range for ${pubkey}: ${amount}"
             [[ "${fork_version,,}" == "${expected_fork_clean,,}" ]] \
                 || fail "Fork version mismatch for ${pubkey}: expected ${genesis_fork_version}, got ${fork_version}"
@@ -417,7 +431,7 @@ function prepare_genesis_deposits() {
             printf '%s:0x%s:%s\n' \
                 "${normalized_pubkey}" "${withdrawal_credentials,,}" "${amount}" \
                 >> "${additional_validators}"
-            total_staked_gwei=$((total_staked_gwei + amount))
+            total_staked_consensus_gwei=$((total_staked_consensus_gwei + amount))
             total_records=$((total_records + 1))
         done < <(
             jq -r '.[] | [
@@ -438,24 +452,27 @@ function prepare_genesis_deposits() {
 
     printf 'Validated deposit files: %s\n' "${#deposit_files[@]}"
     printf 'Validated validators: %s\n' "${total_records}"
-    printf 'Total stake (Gwei): %s\n' "${total_staked_gwei}"
+    printf 'Total stake (consensus Gwei): %s\n' "${total_staked_consensus_gwei}"
 }
 
 total_records=0
-total_staked_gwei=0
+total_staked_consensus_gwei=0
 if [[ "${genesis_mode}" == "deposit-data" ]]; then
     prepare_genesis_deposits
 else
     total_records="${expected_validator_count}"
-    total_staked_gwei=$((expected_validator_count * VALIDATOR_BALANCE_GWEI))
+    total_staked_consensus_gwei=$((
+        expected_validator_count * validator_balance_consensus_gwei
+    ))
     printf 'Validated mnemonic validators: %s\n' "${total_records}"
-    printf 'Total stake (Gwei): %s\n' "${total_staked_gwei}"
+    printf 'Total stake (consensus Gwei): %s\n' "${total_staked_consensus_gwei}"
 fi
-(( total_staked_gwei > 0 )) || fail "Unable to calculate total genesis validator stake."
-(( total_staked_gwei % 1000000000 == 0 )) \
+(( total_staked_consensus_gwei > 0 )) \
+    || fail "Unable to calculate total genesis validator stake."
+(( total_staked_consensus_gwei % 1000000000 == 0 )) \
     || fail "Total validator stake must be a whole consensus staking unit."
 
-total_staked_units=$((total_staked_gwei / 1000000000))
+total_staked_units=$((total_staked_consensus_gwei / 1000000000))
 (( total_staked_units <= max_exact_integer / deposit_amount_divisor )) \
     || fail "Genesis validator stake and DEPOSIT_AMOUNT_DIVISOR produce an amount that is too large."
 total_staked_native_numerator=$((total_staked_units * deposit_amount_divisor))
@@ -565,13 +582,13 @@ if [[ "${genesis_mode}" == "deposit-data" ]]; then
         || fail "Generated genesis validator set does not match the accepted deposit data."
 else
     [[ "$(
-        jq --arg expected_balance "${VALIDATOR_BALANCE_GWEI}" '
+        jq --arg expected_balance "${validator_balance_consensus_gwei}" '
             [.validators[]
                 | select((.effective_balance | tostring) != $expected_balance)]
             | length
         ' "${parsed_genesis}"
     )" -eq 0 ]] \
-        || fail "Generated mnemonic validator balance does not match VALIDATOR_BALANCE_GWEI."
+        || fail "Generated mnemonic validator balance does not match VALIDATOR_BALANCE."
 fi
 
 deposit_contract_address="$(
@@ -611,6 +628,6 @@ printf 'Network: %s\n' "${network_name}"
 printf 'Consensus config: %s\n' "${config_name}"
 printf 'Validator source: %s\n' "${genesis_mode}"
 printf 'Validators: %s\n' "${generated_count}"
-printf 'Total stake (Gwei): %s\n' "${total_staked_gwei}"
+printf 'Total stake (consensus Gwei): %s\n' "${total_staked_consensus_gwei}"
 printf 'Execution premine: %s\n' "${premine_supply}"
 printf 'Genesis validators root: %s\n' "${genesis_validators_root}"

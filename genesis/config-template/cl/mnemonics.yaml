@@ -1,5 +1,1 @@
-- mnemonic: "${EL_AND_CL_MNEMONIC}"
-  count: ${NUMBER_OF_VALIDATORS}
-  balance: ${VALIDATOR_BALANCE_GWEI}
-  wd_address: ${WITHDRAWAL_ADDRESS}
-  wd_prefix: ${WITHDRAWAL_TYPE}
+[]

@@ -95,14 +95,18 @@ The settings are derived from the reviewed `values.env`:
 | Deposit fork version | `GENESIS_FORK_VERSION` |
 | Exit fork version | `CAPELLA_FORK_VERSION` |
 | Deposit amount conversion | `DEPOSIT_AMOUNT_MULTIPLIER` and `DEPOSIT_AMOUNT_DIVISOR` |
-| Minimum activation amount | `MIN_VALIDATOR_GWEI` and the Deposit amount conversion |
-| Minimum native-token Deposit | `MIN_DEPOSIT_AMOUNT` |
+| Minimum Deposit | `MIN_DEPOSIT_AMOUNT` |
+| Minimum activation amount | `MIN_ACTIVATION_AMOUNT` |
 
 The consensus Deposit amount equals the native-token amount multiplied by
 `DEPOSIT_AMOUNT_MULTIPLIER` and divided by `DEPOSIT_AMOUNT_DIVISOR`. These
 values are published as `multiplier` and `divisor`; Validator Operators do not
 configure them locally. Genesis premine calculation applies the same ratio in
 the opposite direction.
+
+`MIN_DEPOSIT_AMOUNT`, `MIN_ACTIVATION_AMOUNT`, `MAX_DEPOSIT_AMOUNT`,
+`VALIDATOR_BALANCE`, and `TARGET_TOTAL_SUPPLY` are whole native-token amounts.
+Gwei is used only internally and in Deposit Data.
 
 Copy the settings into the network `share` directory and publish the
 settings-only `rc.0` Pre-release:
@@ -238,7 +242,7 @@ sha256sum /data/abcore/testnet/keys/validator_keys/deposit_data-*.json
 
 The Network Operator should record the submitting operator, expected validator count, file checksum, withdrawal address, and accepted network parameters without taking custody of any private key material.
 The Genesis builder validates every submitted amount against
-`MIN_VALIDATOR_GWEI` and `MAX_VALIDATOR_GWEI` and calculates total stake from
+`MIN_ACTIVATION_AMOUNT` and `MAX_DEPOSIT_AMOUNT` and calculates total stake from
 the accepted Deposit Data; different operators do not need to select the same
 amount.
 
