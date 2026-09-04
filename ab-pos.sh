@@ -1395,11 +1395,19 @@ if [[ "${generate_keys}" == true ]]; then
     require_address "withdrawal address" "${withdrawal_address}"
 fi
 
-mkdir -p "${share_dir}" "${keys_dir}" "${bin_dir}"
+mkdir -p "${share_dir}"
+if [[ "${deployment_mode}" == "binary" ]]; then
+    mkdir -p "${bin_dir}"
+fi
 if [[ "${key_generation_only}" == false ]]; then
-    mkdir -p "${geth_data_dir}" "${beacon_data_dir}" "${validator_data_dir}" \
-        "${run_dir}" "${log_dir}" "${geth_config_dir}" \
-        "${prysm_config_dir}" "${lighthouse_config_dir}"
+    mkdir -p "${geth_data_dir}" "${beacon_data_dir}" "${geth_config_dir}"
+    if [[ "${deployment_mode}" == "binary" ]]; then
+        mkdir -p "${run_dir}" "${log_dir}"
+    fi
+    case "${consensus_client}" in
+        prysm) mkdir -p "${prysm_config_dir}" ;;
+        lighthouse) mkdir -p "${lighthouse_network_dir}" ;;
+    esac
 fi
 
 function ensure_local_jwt_secret() {
@@ -2330,6 +2338,7 @@ if [[ "${validator_mode}" == true ]]; then
         [[ -s "${password_file}" ]] || fail "Missing Prysm wallet password file: ${password_file}"
         save_validator_password_reference
     fi
+    mkdir -p "${validator_data_dir}"
 fi
 
 network_id="$(jq -r '.config.chainId' "${share_dir}/genesis.json")"
