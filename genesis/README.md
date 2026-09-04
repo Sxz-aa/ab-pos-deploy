@@ -94,13 +94,15 @@ The settings are derived from the reviewed `values.env`:
 | Deposit CLI network name | `CHAIN_NAME` |
 | Deposit fork version | `GENESIS_FORK_VERSION` |
 | Exit fork version | `CAPELLA_FORK_VERSION` |
-| Native-token conversion | `SUPPLY_MULTIPLIER` |
-| Minimum activation amount | `MIN_VALIDATOR_GWEI`, `SUPPLY_MULTIPLIER`, and `DEPOSIT_CLI_MULTIPLIER` |
+| Deposit amount conversion | `DEPOSIT_AMOUNT_MULTIPLIER` and `DEPOSIT_AMOUNT_DIVISOR` |
+| Minimum activation amount | `MIN_VALIDATOR_GWEI` and the Deposit amount conversion |
 | Minimum native-token Deposit | `MIN_DEPOSIT_AMOUNT` |
 
-`SUPPLY_MULTIPLIER` is the number of native tokens represented by one
-consensus-layer staking unit. It is published as `divisor`; Validator Operators
-do not configure it locally.
+The consensus Deposit amount equals the native-token amount multiplied by
+`DEPOSIT_AMOUNT_MULTIPLIER` and divided by `DEPOSIT_AMOUNT_DIVISOR`. These
+values are published as `multiplier` and `divisor`; Validator Operators do not
+configure them locally. Genesis premine calculation applies the same ratio in
+the opposite direction.
 
 Copy the settings into the network `share` directory and publish the
 settings-only `rc.0` Pre-release:

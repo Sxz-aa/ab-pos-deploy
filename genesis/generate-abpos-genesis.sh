@@ -127,8 +127,8 @@ readonly requested_validator_count="${EXPECTED_VALIDATOR_COUNT:-}"
 readonly requested_genesis_timestamp="${GENESIS_TIMESTAMP:-}"
 readonly generator_image="${GENESIS_GENERATOR_IMAGE:-ethpandaops/ethereum-genesis-generator:6.1.6}"
 readonly requested_target_total_supply="${TARGET_TOTAL_SUPPLY:-}"
-readonly requested_supply_multiplier="${SUPPLY_MULTIPLIER:-}"
-readonly requested_deposit_cli_multiplier="${DEPOSIT_CLI_MULTIPLIER:-}"
+readonly requested_deposit_amount_multiplier="${DEPOSIT_AMOUNT_MULTIPLIER:-}"
+readonly requested_deposit_amount_divisor="${DEPOSIT_AMOUNT_DIVISOR:-}"
 readonly requested_min_deposit_amount="${MIN_DEPOSIT_AMOUNT:-}"
 readonly requested_premine_address="${EL_PREMINE_ADDRESS:-}"
 readonly requested_base_fee_per_gas="${EL_BASE_FEE_PER_GAS:-}"
@@ -171,9 +171,8 @@ readonly expected_deposit_network_name="${chain_name}"
 readonly min_validator_gwei="${requested_min_validator_gwei:-${MIN_VALIDATOR_GWEI:-32000000000}}"
 readonly max_validator_gwei="${requested_max_validator_gwei:-${MAX_VALIDATOR_GWEI:-2048000000000}}"
 readonly target_total_supply="${requested_target_total_supply:-${TARGET_TOTAL_SUPPLY:-}}"
-readonly supply_multiplier="${requested_supply_multiplier:-${SUPPLY_MULTIPLIER:-}}"
-readonly deposit_cli_multiplier="${requested_deposit_cli_multiplier:-${DEPOSIT_CLI_MULTIPLIER:-1}}"
-readonly deposit_amount_divisor="${supply_multiplier}"
+readonly deposit_amount_multiplier="${requested_deposit_amount_multiplier:-${DEPOSIT_AMOUNT_MULTIPLIER:-}}"
+readonly deposit_amount_divisor="${requested_deposit_amount_divisor:-${DEPOSIT_AMOUNT_DIVISOR:-}}"
 readonly min_deposit_amount="${requested_min_deposit_amount:-${MIN_DEPOSIT_AMOUNT:-1}}"
 readonly premine_address="${requested_premine_address:-${EL_PREMINE_ADDRESS:-0x161f5Ef2C0c1Be307CFeF2E7b1411E352a3Be01B}}"
 readonly base_fee_per_gas="${requested_base_fee_per_gas:-${EL_BASE_FEE_PER_GAS:-0x2D79883D2000}}"
@@ -213,8 +212,8 @@ require_safe_positive_integer "MAX_VALIDATOR_GWEI" "${max_validator_gwei}"
     || fail "MIN_VALIDATOR_GWEI must not exceed MAX_VALIDATOR_GWEI."
 
 require_safe_positive_integer "TARGET_TOTAL_SUPPLY" "${target_total_supply}"
-require_safe_positive_integer "SUPPLY_MULTIPLIER" "${supply_multiplier}"
-require_safe_positive_integer "DEPOSIT_CLI_MULTIPLIER" "${deposit_cli_multiplier}"
+require_safe_positive_integer "DEPOSIT_AMOUNT_MULTIPLIER" "${deposit_amount_multiplier}"
+require_safe_positive_integer "DEPOSIT_AMOUNT_DIVISOR" "${deposit_amount_divisor}"
 [[ "${min_deposit_amount}" =~ ^[1-9][0-9]*$ ]] \
     || fail "MIN_DEPOSIT_AMOUNT must be a positive whole-token amount."
 [[ "${premine_address}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
@@ -236,11 +235,11 @@ require_safe_positive_integer "DEPOSIT_CLI_MULTIPLIER" "${deposit_cli_multiplier
 [[ "${DEPOSIT_CONTRACT_ADDRESS:-}" =~ ^0x[0-9a-fA-F]{40}$ ]] \
     || fail "DEPOSIT_CONTRACT_ADDRESS is invalid in ${config_dir}/values.env."
 (( min_validator_gwei <= max_exact_integer / deposit_amount_divisor )) \
-    || fail "MIN_VALIDATOR_GWEI and SUPPLY_MULTIPLIER produce an amount that is too large."
+    || fail "MIN_VALIDATOR_GWEI and DEPOSIT_AMOUNT_DIVISOR produce an amount that is too large."
 min_activation_numerator=$((min_validator_gwei * deposit_amount_divisor))
-(( min_activation_numerator % deposit_cli_multiplier == 0 )) \
+(( min_activation_numerator % deposit_amount_multiplier == 0 )) \
     || fail "The minimum activation amount cannot be represented exactly in native-token Gwei."
-min_activation_public_gwei=$((min_activation_numerator / deposit_cli_multiplier))
+min_activation_public_gwei=$((min_activation_numerator / deposit_amount_multiplier))
 (( min_activation_public_gwei % gwei_per_token == 0 )) \
     || fail "The minimum activation amount must be a whole native-token amount."
 min_activation_amount=$((min_activation_public_gwei / gwei_per_token))
@@ -248,7 +247,7 @@ readonly min_activation_amount
 parse_whole_token_amount_to_gwei "MIN_DEPOSIT_AMOUNT" "${min_deposit_amount}"
 min_deposit_public_gwei="${parsed_gwei}"
 (( min_deposit_public_gwei % deposit_amount_divisor == 0 )) \
-    || fail "MIN_DEPOSIT_AMOUNT cannot be represented exactly with SUPPLY_MULTIPLIER."
+    || fail "MIN_DEPOSIT_AMOUNT cannot be represented exactly with DEPOSIT_AMOUNT_DIVISOR."
 (( min_activation_public_gwei >= min_deposit_public_gwei )) \
     || fail "Deposit amount settings are inconsistent."
 
@@ -261,7 +260,7 @@ function write_deposit_settings() {
         --arg genesis_fork_version "${GENESIS_FORK_VERSION}" \
         --arg exit_fork_version "${CAPELLA_FORK_VERSION}" \
         --arg genesis_validator_root "${validators_root}" \
-        --argjson multiplier "${deposit_cli_multiplier}" \
+        --argjson multiplier "${deposit_amount_multiplier}" \
         --argjson divisor "${deposit_amount_divisor}" \
         --argjson min_activation_amount "${min_activation_amount}" \
         --argjson min_deposit_amount "${min_deposit_amount}" \
@@ -291,7 +290,7 @@ if [[ "${genesis_mode}" == "deposit-data" ]]; then
         --arg chain "${chain_name}" \
         --arg genesis_fork_version "${GENESIS_FORK_VERSION}" \
         --arg exit_fork_version "${CAPELLA_FORK_VERSION}" \
-        --argjson multiplier "${deposit_cli_multiplier}" \
+        --argjson multiplier "${deposit_amount_multiplier}" \
         --argjson divisor "${deposit_amount_divisor}" \
         --argjson min_activation_amount "${min_activation_amount}" \
         --argjson min_deposit_amount "${min_deposit_amount}" '
@@ -454,10 +453,15 @@ else
 fi
 (( total_staked_gwei > 0 )) || fail "Unable to calculate total genesis validator stake."
 (( total_staked_gwei % 1000000000 == 0 )) \
-    || fail "Total validator stake must be a whole number of ETH."
+    || fail "Total validator stake must be a whole consensus staking unit."
 
-total_staked_eth=$((total_staked_gwei / 1000000000))
-total_staked_supply=$((total_staked_eth * supply_multiplier))
+total_staked_units=$((total_staked_gwei / 1000000000))
+(( total_staked_units <= max_exact_integer / deposit_amount_divisor )) \
+    || fail "Genesis validator stake and DEPOSIT_AMOUNT_DIVISOR produce an amount that is too large."
+total_staked_native_numerator=$((total_staked_units * deposit_amount_divisor))
+(( total_staked_native_numerator % deposit_amount_multiplier == 0 )) \
+    || fail "Genesis validator stake cannot be represented as whole native tokens."
+total_staked_supply=$((total_staked_native_numerator / deposit_amount_multiplier))
 premine_supply=$((target_total_supply - total_staked_supply))
 (( premine_supply > 0 )) || fail "Calculated execution-layer premine is not positive."
 premine_wei="${premine_supply}000000000000000000"
