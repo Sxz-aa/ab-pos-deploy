@@ -90,6 +90,22 @@ function ensure_docker_available() {
     fail "Docker is unavailable or permission was denied."
 }
 
+function run_generator_stage() {
+    local stage="$1"
+    local log_file="$2"
+    shift 2
+
+    printf 'Generating %s...\n' "${stage}"
+    if [[ "${generator_verbose}" == true ]]; then
+        "$@"
+    elif ! "$@" > "${log_file}" 2>&1; then
+        printf 'ERROR: Failed to generate %s. Generator output follows:\n\n' \
+            "${stage}" >&2
+        tail -n 100 "${log_file}" >&2 || true
+        exit 1
+    fi
+}
+
 function display_path() {
     local path="$1"
 
@@ -168,6 +184,7 @@ Default configuration:
 Optional environment variables:
   GENESIS_CONFIG_DIR         Same as --config
   GENESIS_GENERATOR_IMAGE    Generator image (default: ethpandaops/ethereum-genesis-generator:6.1.6)
+  GENESIS_VERBOSE            Set to true to show complete generator output
   EXPECTED_VALIDATOR_COUNT   Override NUMBER_OF_VALIDATORS from values.env
   GENESIS_TIMESTAMP          Override GENESIS_TIMESTAMP from values.env
 
@@ -249,6 +266,7 @@ readonly genesis_mode prepare_deposit_settings export_output force_export config
 readonly requested_validator_count="${EXPECTED_VALIDATOR_COUNT:-}"
 readonly requested_genesis_timestamp="${GENESIS_TIMESTAMP:-}"
 readonly generator_image="${GENESIS_GENERATOR_IMAGE:-ethpandaops/ethereum-genesis-generator:6.1.6}"
+readonly generator_verbose="${GENESIS_VERBOSE:-false}"
 readonly requested_target_total_supply="${TARGET_TOTAL_SUPPLY:-}"
 readonly requested_deposit_amount_multiplier="${DEPOSIT_AMOUNT_MULTIPLIER:-}"
 readonly requested_deposit_amount_divisor="${DEPOSIT_AMOUNT_DIVISOR:-}"
@@ -261,6 +279,9 @@ readonly requested_base_fee_per_gas="${EL_BASE_FEE_PER_GAS:-}"
 readonly requested_config_name="${GENESIS_CONFIG_NAME:-}"
 readonly requested_chain_name="${CHAIN_NAME:-}"
 readonly requested_network_name="${NETWORK_NAME:-}"
+
+[[ "${generator_verbose}" == true || "${generator_verbose}" == false ]] \
+    || fail "GENESIS_VERBOSE must be true or false."
 
 install_missing_dependencies
 
@@ -578,7 +599,7 @@ fi
 
 readonly genesis_fork_version="${GENESIS_FORK_VERSION}"
 
-printf 'Genesis validator source: %s\n' "${genesis_mode}"
+printf 'Validating Genesis validator input...\n'
 
 function prepare_genesis_deposits() {
     local deposit_file
@@ -652,9 +673,6 @@ function prepare_genesis_deposits() {
         || fail "Validator count mismatch: expected ${expected_validator_count}, found ${total_records}."
     chmod 600 "${additional_validators}"
 
-    printf 'Validated deposit files: %s\n' "${#deposit_files[@]}"
-    printf 'Validated validators: %s\n' "${total_records}"
-    printf 'Total stake (consensus Gwei): %s\n' "${total_staked_consensus_gwei}"
 }
 
 total_records=0
@@ -666,8 +684,6 @@ else
     total_staked_consensus_gwei=$((
         expected_validator_count * validator_balance_consensus_gwei
     ))
-    printf 'Validated mnemonic validators: %s\n' "${total_records}"
-    printf 'Total stake (consensus Gwei): %s\n' "${total_staked_consensus_gwei}"
 fi
 (( total_staked_consensus_gwei > 0 )) \
     || fail "Unable to calculate total genesis validator stake."
@@ -700,7 +716,10 @@ if [[ "${genesis_mode}" == "deposit-data" ]]; then
         >> "${runtime_values}"
 fi
 
-"${docker_command[@]}" run --rm \
+run_generator_stage \
+    "execution-layer Genesis" \
+    "${runtime_dir}/execution-generator.log" \
+    "${docker_command[@]}" run --rm \
     -u "$(id -u):$(id -g)" \
     -v "${runtime_output_dir}:/data" \
     -v "${runtime_config_dir}:/config:ro" \
@@ -742,7 +761,10 @@ mv -f -- "${runtime_genesis}.tmp" "${runtime_genesis}"
 [[ "$(jq -r '.config.depositContractAddress | ascii_downcase' "${runtime_genesis}")" == "${DEPOSIT_CONTRACT_ADDRESS,,}" ]] \
     || fail "Generated execution genesis deposit contract address is incorrect."
 
-"${docker_command[@]}" run --rm \
+run_generator_stage \
+    "consensus-layer Genesis" \
+    "${runtime_dir}/consensus-generator.log" \
+    "${docker_command[@]}" run --rm \
     -u "$(id -u):$(id -g)" \
     -v "${runtime_output_dir}:/data" \
     -v "${runtime_config_dir}:/config:ro" \
@@ -830,6 +852,9 @@ printf 'Network: %s\n' "${network_name}"
 printf 'Consensus config: %s\n' "${config_name}"
 printf 'Validator source: %s\n' "${genesis_mode}"
 printf 'Validators: %s\n' "${generated_count}"
-printf 'Total stake (consensus Gwei): %s\n' "${total_staked_consensus_gwei}"
-printf 'Execution premine: %s\n' "${premine_supply}"
+printf 'Genesis validator stake:\n'
+printf '  Consensus layer: %s staking units\n' "${total_staked_units}"
+printf '  Native tokens: %s\n' "${total_staked_supply}"
+printf 'Execution-layer premine: %s native tokens\n' "${premine_supply}"
+printf 'Total native-token supply: %s\n' "${target_total_supply}"
 printf 'Genesis validators root: %s\n' "${genesis_validators_root}"
