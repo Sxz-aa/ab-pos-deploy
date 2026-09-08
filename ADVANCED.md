@@ -340,6 +340,9 @@ sudo ./ab-pos.sh testnet prysm geth \
 
 Never run the same validator pubkey from two validator clients. Preserve the validator client data directory when upgrading because it contains slashing protection state.
 
+Prysm stores its wallet and slashing protection database in the persistent
+`prysm-validator/` directory.
+
 ### 6.1 Validator key generation and import
 
 Key generation, key import, and synchronization source are independent:
@@ -478,7 +481,7 @@ For binary deployments, include `--binary` in both commands.
 - It does not generate checkpoints.
 - It does not deploy monitoring, a reverse proxy, TLS, or firewall rules.
 - A missing Release checksum produces a warning rather than a hard failure.
-- It does not back up or migrate slashing protection data.
+- It does not create external backups of validator keys or slashing protection data.
 - Fixed service identities and ports prevent multiple instances of the same network on one host.
 - Binary deployments do not automatically start after a server reboot.
 - End-to-end production testing is still required for each supported client and node mode.

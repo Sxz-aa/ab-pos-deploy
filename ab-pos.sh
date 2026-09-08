@@ -3020,6 +3020,7 @@ function deploy_binary_node() {
             import_prysm_keys_binary
             validator_binary_args=(
                 --accept-terms-of-use=true
+                "--datadir=${validator_data_dir}"
                 "--chain-config-file=${share_dir}/config.prysm.yaml"
                 --beacon-rpc-provider=127.0.0.1:4000
                 "--wallet-dir=${validator_data_dir}"
@@ -3300,6 +3301,7 @@ if [[ "${validator_mode}" == true ]]; then
             -v "${password_file}:/password.txt:ro" \
             "${default_prysm_validator_image}" \
             --accept-terms-of-use=true \
+            --datadir=/wallet \
             --chain-config-file=/share/config.prysm.yaml \
             --beacon-rpc-provider=127.0.0.1:4000 \
             --wallet-dir=/wallet --wallet-password-file=/password.txt \
