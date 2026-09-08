@@ -38,9 +38,8 @@ if docker manifest inspect "${image_ref}" >/dev/null 2>"${manifest_error}"; then
     if [[ -n "${published_fingerprint}" && "${published_fingerprint}" != "${expected_fingerprint}" ]]; then
         fail "${image_ref} was built from different inputs; bump AB_GETH_VERSION instead of overwriting it"
     fi
-    if [[ -z "${published_fingerprint}" ]]; then
-        printf 'WARNING: %s predates build fingerprints; reusing it by exact version label.\n' "${image_ref}" >&2
-    fi
+    [[ -n "${published_fingerprint}" ]] \
+        || fail "${image_ref} has no build fingerprint; bump AB_GETH_VERSION and publish a verifiable image"
 
     "${root_dir}/scripts/export-geth-image.sh"
     exit 0

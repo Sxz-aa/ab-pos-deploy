@@ -667,9 +667,7 @@ function detect_docker_consensus_client() {
             relevant=true
         fi
         case "${container_name}" in
-            "${chain_name}-${network}-consensus" | \
-            "${chain_name}-${network}-prysm" | \
-            "${chain_name}-${network}-lighthouse")
+            "${chain_name}-${network}-consensus")
                 relevant=true
                 ;;
         esac
@@ -792,7 +790,6 @@ lighthouse_network_dir="${lighthouse_config_dir}/network"
 geth_nodekey_file="${geth_config_dir}/nodekey"
 prysm_p2p_key_file="${prysm_config_dir}/p2p.key"
 jwt_secret_file="${config_dir}/jwtsecret"
-legacy_jwt_secret_file="${data_dir}/jwtsecret"
 bin_dir="${data_dir}/bin"
 run_dir="${data_dir}/run"
 log_dir="${data_dir}/logs"
@@ -1614,12 +1611,6 @@ function ensure_local_jwt_secret() {
     local jwt
     local temporary_file
 
-    if [[ ! -e "${jwt_secret_file}" && -s "${legacy_jwt_secret_file}" ]]; then
-        cp -- "${legacy_jwt_secret_file}" "${jwt_secret_file}"
-        chmod 600 "${jwt_secret_file}"
-        color "32" "Preserved the existing Engine API JWT secret in ${jwt_secret_file}."
-    fi
-
     if [[ ! -s "${jwt_secret_file}" ]]; then
         temporary_file="$(mktemp "${config_dir}/.jwtsecret.XXXXXX")"
         openssl rand -hex 32 >"${temporary_file}"
@@ -1650,22 +1641,6 @@ function validate_p2p_private_key() {
     chmod 600 "${key_file}"
 }
 
-function preserve_private_key() {
-    local legacy_file="$1"
-    local config_file="$2"
-    local description="$3"
-
-    if [[ -e "${config_file}" ]]; then
-        validate_p2p_private_key "${config_file}" "${description}"
-        return 0
-    fi
-    [[ -s "${legacy_file}" ]] || return 1
-
-    cp -- "${legacy_file}" "${config_file}"
-    validate_p2p_private_key "${config_file}" "${description}"
-    color "32" "Preserved the existing ${description} in ${config_file}."
-}
-
 function validate_lighthouse_private_key() {
     local key_file="$1"
     local key_size
@@ -1682,28 +1657,48 @@ function validate_lighthouse_private_key() {
 }
 
 function prepare_geth_nodekey() {
-    preserve_private_key "${geth_data_dir}/geth/nodekey" "${geth_nodekey_file}" \
-        "Geth P2P private key" || true
+    if [[ -e "${geth_nodekey_file}" ]]; then
+        validate_p2p_private_key "${geth_nodekey_file}" "Geth P2P private key"
+        return 0
+    fi
+    [[ ! -d "${geth_data_dir}/geth/chaindata" ]] \
+        || fail "Geth P2P private key is missing from ${geth_nodekey_file}; refusing to reuse an existing chain database with a new node identity."
 }
 
-function require_geth_nodekey() {
-    prepare_geth_nodekey
-    [[ -s "${geth_nodekey_file}" ]] \
-        || fail "Geth did not generate its P2P private key during initialization: ${geth_data_dir}/geth/nodekey"
+function persist_generated_geth_nodekey() {
+    local generated_key="${geth_data_dir}/geth/nodekey"
+
+    if [[ ! -e "${geth_nodekey_file}" ]]; then
+        [[ -s "${generated_key}" ]] \
+            || fail "Geth did not generate its P2P private key during initialization: ${generated_key}"
+        mv -- "${generated_key}" "${geth_nodekey_file}"
+        color "32" "Stored the new Geth P2P private key in ${geth_nodekey_file}."
+    fi
+    validate_p2p_private_key "${geth_nodekey_file}" "Geth P2P private key"
 }
 
 function prepare_prysm_p2p_key() {
-    preserve_private_key "${beacon_data_dir}/network-keys" "${prysm_p2p_key_file}" \
-        "Prysm P2P private key" || true
+    if [[ -e "${prysm_p2p_key_file}" ]]; then
+        validate_p2p_private_key "${prysm_p2p_key_file}" "Prysm P2P private key"
+        return 0
+    fi
+    [[ ! -e "${beacon_data_dir}/network-keys" ]] \
+        || fail "Prysm P2P private key is missing from ${prysm_p2p_key_file}; refusing to import an identity from the beacon data directory."
 }
 
 function persist_generated_prysm_p2p_key() {
     local attempt
+    local generated_key="${beacon_data_dir}/network-keys"
 
-    [[ -s "${prysm_p2p_key_file}" ]] && return 0
+    if [[ -s "${prysm_p2p_key_file}" ]]; then
+        validate_p2p_private_key "${prysm_p2p_key_file}" "Prysm P2P private key"
+        return 0
+    fi
     for attempt in {1..15}; do
-        if [[ -s "${beacon_data_dir}/network-keys" ]]; then
-            prepare_prysm_p2p_key
+        if [[ -s "${generated_key}" ]]; then
+            mv -- "${generated_key}" "${prysm_p2p_key_file}"
+            validate_p2p_private_key "${prysm_p2p_key_file}" "Prysm P2P private key"
+            color "32" "Stored the new Prysm P2P private key in ${prysm_p2p_key_file}."
             return 0
         fi
         sleep 1
@@ -1712,13 +1707,6 @@ function persist_generated_prysm_p2p_key() {
 }
 
 function prepare_lighthouse_network_identity() {
-    local legacy_network_dir="${beacon_data_dir}/network"
-
-    if [[ ! -s "${lighthouse_network_dir}/key" && -s "${legacy_network_dir}/key" ]]; then
-        mkdir -p "${lighthouse_network_dir}"
-        cp -a -- "${legacy_network_dir}/." "${lighthouse_network_dir}/"
-        color "32" "Preserved the existing Lighthouse network identity in ${lighthouse_network_dir}."
-    fi
     mkdir -p "${lighthouse_network_dir}"
     if [[ -e "${lighthouse_network_dir}/key" ]]; then
         validate_lighthouse_private_key "${lighthouse_network_dir}/key"
@@ -2931,7 +2919,7 @@ function deploy_binary_node() {
         color "34" "Updating Geth chain configuration from genesis.json."
         "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
     fi
-    require_geth_nodekey
+    persist_generated_geth_nodekey
 
     geth_binary_args=(
         "--datadir=${geth_data_dir}"
@@ -3112,7 +3100,7 @@ else
         "${geth_image}" \
         --datadir=/data init /share/genesis.json
 fi
-require_geth_nodekey
+persist_generated_geth_nodekey
 geth_args=(
     --datadir=/data
     --nodekey=/node-config/nodekey

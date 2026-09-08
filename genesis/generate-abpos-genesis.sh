@@ -175,7 +175,6 @@ Modes:
   deposit-data  Build the validator set from all deposit_data-*.json files
                 under CONFIG_DIR/validator-deposits. This is the default mode.
   mnemonic   Build the validator set from one local BIP-39 mnemonic file.
-             --legacy is accepted as an alias.
 
 Default configuration:
   CONFIG_DIR                 ./config, relative to this script
@@ -223,7 +222,7 @@ while (( "$#" > 0 )); do
             force_export=true
             shift
             ;;
-        --mnemonic|--legacy)
+        --mnemonic)
             [[ "$#" -ge 2 ]] || fail "$1 requires a mnemonic file."
             genesis_mode="mnemonic"
             mnemonic_file="$2"

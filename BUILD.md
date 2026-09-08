@@ -179,7 +179,7 @@ New images contain a build fingerprint derived from the pinned upstream version,
 
 - A matching fingerprint permits reuse.
 - A different fingerprint fails the Release and requires a new AB revision.
-- An older image without a fingerprint may be reused only when its exact version label matches; the workflow prints a compatibility warning.
+- A missing fingerprint fails the Release and requires a new AB revision.
 
 The workflow protects exact tags from accidental replacement. Registry administrators can still mutate tags manually, so production verification may additionally pin an image digest.
 

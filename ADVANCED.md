@@ -319,7 +319,7 @@ Important subdirectories and files include:
         `-- lighthouse/network/
 ```
 
-The installer keeps node identity files outside the execution and beacon databases. Deleting a client database for a resync therefore does not change the node's execution enode or consensus peer ID. Existing installations are migrated automatically the next time the installer runs.
+The installer keeps node identity files outside the execution and beacon databases. Deleting a client database for a resync therefore does not change the node's execution enode or consensus peer ID.
 
 Override the entire network directory:
 
