@@ -17,7 +17,7 @@ function fail() {
 }
 
 command -v docker >/dev/null 2>&1 || fail "Docker Engine is required to build the ab-geth image"
-docker buildx version >/dev/null 2>&1 || fail "Docker Buildx is required to build the ab-geth image"
+docker buildx version >/dev/null 2>&1 || fail "Docker Buildx is required to build the ab-geth image; install docker-buildx (Ubuntu) or docker-buildx-plugin (Docker CE)."
 
 [[ -x "${binary}" ]] || fail "patched geth binary not found: ${binary}; run make geth"
 mkdir -p "${build_dir}"

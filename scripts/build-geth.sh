@@ -19,7 +19,7 @@ function fail() {
 
 command -v docker >/dev/null 2>&1 || fail "Docker Engine is required to build ab-geth"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
-docker buildx version >/dev/null 2>&1 || fail "Docker Buildx is required to build ab-geth"
+docker buildx version >/dev/null 2>&1 || fail "Docker Buildx is required to build ab-geth; install docker-buildx (Ubuntu) or docker-buildx-plugin (Docker CE)."
 
 "${root_dir}/scripts/prepare-geth-source.sh"
 rm -rf -- "${export_dir}"

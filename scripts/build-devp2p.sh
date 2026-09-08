@@ -16,7 +16,7 @@ function fail() {
 }
 
 command -v docker >/dev/null 2>&1 || fail "Docker Engine is required to build devp2p"
-docker buildx version >/dev/null 2>&1 || fail "Docker Buildx is required to build devp2p"
+docker buildx version >/dev/null 2>&1 || fail "Docker Buildx is required to build devp2p; install docker-buildx (Ubuntu) or docker-buildx-plugin (Docker CE)."
 
 "${root_dir}/scripts/prepare-geth-source.sh"
 rm -rf -- "${export_dir}"
