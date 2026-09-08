@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 readonly root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly build_dir="${BUILD_DIR:-${root_dir}/build}"
+readonly client_versions_file="${CLIENT_VERSIONS_FILE:-${build_dir}/client-versions.json}"
 
 function fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -114,6 +115,44 @@ function ssz_uint64_le() {
     printf '%s\n' "${value}"
 }
 
+function validate_client_versions() {
+    [[ -s "${client_versions_file}" ]] \
+        || fail "client version lock is missing: ${client_versions_file}; run make client-versions"
+    jq -e '
+        . as $lock
+        | type == "object"
+        and (keys | sort) == (["geth", "prysm", "lighthouse", "deposit_cli"] | sort)
+        and (.geth | keys | sort) == (["upstream_version", "ab_version"] | sort)
+        and (.geth.upstream_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+        and (.geth.ab_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*$"))
+        and (.prysm | keys | sort) == (["version", "beacon_image", "validator_image"] | sort)
+        and (.lighthouse | keys | sort) == (["version", "image"] | sort)
+        and (.deposit_cli | keys | sort) == (["version", "image"] | sort)
+        and ([.prysm.version, .lighthouse.version, .deposit_cli.version]
+             | all(test("^v[0-9]+\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?$")))
+        and ([.prysm.beacon_image, .prysm.validator_image,
+              .lighthouse.image, .deposit_cli.image]
+             | all(test("^[^[:space:]@]+:[^[:space:]@]+$")))
+        and ([.prysm.beacon_image, .prysm.validator_image,
+              .lighthouse.image, .deposit_cli.image]
+             | all((endswith(":latest") or endswith(":stable")) | not))
+        and (.prysm.beacon_image | endswith(":" + $lock.prysm.version))
+        and (.prysm.validator_image | endswith(":" + $lock.prysm.version))
+        and (.lighthouse.image | endswith(":" + $lock.lighthouse.version))
+        and (.deposit_cli.image | endswith(":" + $lock.deposit_cli.version))
+    ' "${client_versions_file}" >/dev/null \
+        || fail "invalid client version lock: ${client_versions_file}"
+
+    if [[ -n "${GETH_VERSION:-}" ]]; then
+        [[ "$(jq -r '.geth.upstream_version' "${client_versions_file}")" == "${GETH_VERSION}" ]] \
+            || fail "client version lock does not match GETH_VERSION"
+    fi
+    if [[ -n "${AB_GETH_VERSION:-}" ]]; then
+        [[ "$(jq -r '.geth.ab_version' "${client_versions_file}")" == "${AB_GETH_VERSION}" ]] \
+            || fail "client version lock does not match AB_GETH_VERSION"
+    fi
+}
+
 function validate_network() {
     local target_chain="$1"
     local target_network="$2"
@@ -183,6 +222,7 @@ function validate_network() {
 
     require_command jq
     require_command od
+    validate_client_versions
     jq -e '
         type == "object"
         and (.config | type == "object")
@@ -368,7 +408,9 @@ require_command tar
 require_command sha256sum
 
 mkdir -p "${build_dir}"
-tar -C "${share_dir}" -czf "${artifact}" .
+tar -czf "${artifact}" \
+    -C "${share_dir}" . \
+    -C "${build_dir}" client-versions.json
 (
     cd "${build_dir}"
     sha256sum "$(basename "${artifact}")" > "$(basename "${artifact}").sha256"

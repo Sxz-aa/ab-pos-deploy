@@ -52,7 +52,7 @@ jobs:
         if: steps.release.outputs.kind == 'participation'
         run: |
           set -Eeuo pipefail
-          mkdir -p build
+          make client-versions
           found_settings=false
           zero_root="0x0000000000000000000000000000000000000000000000000000000000000000"
           for settings_path in */*/share/deposit-settings.json; do
@@ -87,7 +87,9 @@ jobs:
                 and .min_activation_amount >= .min_deposit_amount
               ' "${settings_path}" >/dev/null
             archive="build/${chain}-${network}-${GITHUB_REF_NAME}.tar.gz"
-            tar -C "$(dirname "${settings_path}")" -czf "${archive}" deposit-settings.json
+            tar -czf "${archive}" \
+              -C "$(dirname "${settings_path}")" deposit-settings.json \
+              -C "${GITHUB_WORKSPACE}/build" client-versions.json
             (
               cd build
               sha256sum "$(basename "${archive}")" >"$(basename "${archive}").sha256"

@@ -10,15 +10,15 @@ readonly default_chain_name="${ABPOS_CHAIN_NAME:-abcore}"
 readonly default_root_dir="${ABPOS_ROOT_DIR:-/data}"
 readonly github_api_url="${GITHUB_API_URL:-https://api.github.com}"
 readonly geth_image_override="${GETH_DOCKER_IMAGE:-}"
-readonly default_prysm_beacon_image="${PRYSM_BEACON_IMAGE:-offchainlabs/prysm-beacon-chain:stable}"
-readonly default_prysm_validator_image="${PRYSM_VALIDATOR_IMAGE:-offchainlabs/prysm-validator:stable}"
-readonly default_lighthouse_image="${LIGHTHOUSE_IMAGE:-sigp/lighthouse:latest}"
-readonly default_deposit_cli_image="${DEPOSIT_CLI_IMAGE:-ghcr.io/ethstaker/ethstaker-deposit-cli:v1.3.0}"
+readonly prysm_beacon_image_override="${PRYSM_BEACON_IMAGE:-}"
+readonly prysm_validator_image_override="${PRYSM_VALIDATOR_IMAGE:-}"
+readonly lighthouse_image_override="${LIGHTHOUSE_IMAGE:-}"
+readonly deposit_cli_image_override="${DEPOSIT_CLI_IMAGE:-}"
 readonly geth_binary_url_override="${AB_GETH_BINARY_URL:-}"
 readonly geth_binary_checksum_url_override="${AB_GETH_BINARY_SHA256_URL:-}"
-readonly prysm_release_version="${PRYSM_RELEASE_VERSION:-latest}"
-readonly lighthouse_release_version="${LIGHTHOUSE_RELEASE_VERSION:-latest}"
-readonly deposit_cli_release_version="${DEPOSIT_CLI_RELEASE_VERSION:-latest}"
+readonly prysm_release_version_override="${PRYSM_RELEASE_VERSION:-}"
+readonly lighthouse_release_version_override="${LIGHTHOUSE_RELEASE_VERSION:-}"
+readonly deposit_cli_release_version_override="${DEPOSIT_CLI_RELEASE_VERSION:-}"
 readonly gwei_per_token=1000000000
 readonly max_exact_integer=9007199254740991
 
@@ -122,6 +122,23 @@ USAGE
 
 function require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
+}
+
+function require_explicit_image_tag() {
+    local image="$1"
+    local label="$2"
+
+    [[ "${image}" =~ ^[^[:space:]@]+:[^[:space:]@]+$ \
+        && "${image}" != *:latest && "${image}" != *:stable ]] \
+        || fail "${label} must use an explicit version tag: ${image:-empty}"
+}
+
+function require_release_version() {
+    local version="$1"
+    local label="$2"
+
+    [[ "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
+        || fail "${label} must be an explicit Release version: ${version:-empty}"
 }
 
 function interactive_terminal_available() {
@@ -471,6 +488,13 @@ validator_deposit_amount="${VALIDATOR_DEPOSIT_AMOUNT:-}"
 assume_yes=false
 public_ip_override=""
 node_public_ip=""
+default_prysm_beacon_image=""
+default_prysm_validator_image=""
+default_lighthouse_image=""
+deposit_cli_image=""
+prysm_release_version=""
+lighthouse_release_version=""
+deposit_cli_release_version=""
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
@@ -759,7 +783,6 @@ geth_data_dir="${data_dir}/geth"
 beacon_data_dir="${data_dir}/${consensus_client:-consensus}"
 validator_data_dir="${data_dir}/${consensus_client:-consensus}-validator"
 mnemonic_file="${mnemonic_file:-$(dirname "${keys_dir}")/mnemonic.txt}"
-deposit_cli_image="${default_deposit_cli_image}"
 config_dir="${data_dir}/config"
 geth_config_dir="${config_dir}/execution/geth"
 consensus_config_dir="${config_dir}/consensus"
@@ -1923,7 +1946,8 @@ function download_release() {
     fi
 
     for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
-        deposit_contract_block.txt genesis_validators_root.txt deposit-settings.json; do
+        deposit_contract_block.txt genesis_validators_root.txt deposit-settings.json \
+        client-versions.json; do
         if [[ ! -s "${temporary_share_dir}/${required_file}" ]]; then
             rm -rf -- "${temporary_share_dir}"
             fail "The network Release is missing required file: ${required_file}"
@@ -1977,8 +2001,10 @@ function prepare_key_generation_settings() {
     local member
     local normalized_member
     local member_count=0
+    local client_versions_count=0
     local release_tag
     local deposit_settings_member=""
+    local client_versions_member=""
 
     if [[ -n "${deposit_settings_file}" ]]; then
         [[ -s "${deposit_settings_file}" ]] \
@@ -2053,18 +2079,97 @@ function prepare_key_generation_settings() {
         if [[ "${normalized_member}" == deposit-settings.json ]]; then
             member_count=$((member_count + 1))
             deposit_settings_member="${member}"
+        elif [[ "${normalized_member}" == client-versions.json ]]; then
+            client_versions_count=$((client_versions_count + 1))
+            client_versions_member="${member}"
         fi
     done <"${archive_listing}"
     [[ "${member_count}" -eq 1 ]] \
         || fail "The selected Release must contain exactly one deposit-settings.json."
-    tar -xzf "${archive_path}" -C "${temporary_dir}" "${deposit_settings_member}" \
+    [[ "${client_versions_count}" -eq 1 ]] \
+        || fail "The selected Release must contain exactly one client-versions.json."
+    tar -xzf "${archive_path}" -C "${temporary_dir}" \
+        "${deposit_settings_member}" "${client_versions_member}" \
         --no-same-owner --no-same-permissions \
         || fail "Unable to extract ${archive_name}."
     install -m 0644 "${temporary_dir}/deposit-settings.json" \
         "${share_dir}/deposit-settings.json"
+    install -m 0644 "${temporary_dir}/client-versions.json" \
+        "${share_dir}/client-versions.json"
     deposit_settings_file="${share_dir}/deposit-settings.json"
     rm -rf -- "${temporary_dir}"
     color "32" "Installed public Deposit settings: ${deposit_settings_file}"
+}
+
+function load_client_versions() {
+    local versions_file="${share_dir}/client-versions.json"
+    local locked_geth_version
+
+    if [[ ! -s "${versions_file}" && "${key_generation_only}" == true \
+        && -n "${deposit_settings_file}" ]]; then
+        if [[ "${deployment_mode}" == docker ]]; then
+            [[ -n "${deposit_cli_image_override}" ]] \
+                || fail "--deposit-settings requires DEPOSIT_CLI_IMAGE when no client-versions.json is installed."
+            deposit_cli_image="${deposit_cli_image_override}"
+            require_explicit_image_tag "${deposit_cli_image}" "DEPOSIT_CLI_IMAGE"
+        else
+            [[ -n "${deposit_cli_release_version_override}" ]] \
+                || fail "--deposit-settings requires DEPOSIT_CLI_RELEASE_VERSION when no client-versions.json is installed."
+            deposit_cli_release_version="${deposit_cli_release_version_override}"
+            require_release_version "${deposit_cli_release_version}" "DEPOSIT_CLI_RELEASE_VERSION"
+        fi
+        return 0
+    fi
+    [[ -s "${versions_file}" ]] \
+        || fail "The selected Release does not contain client-versions.json."
+    jq -e '
+        . as $lock
+        | type == "object"
+        and (keys | sort) == (["geth", "prysm", "lighthouse", "deposit_cli"] | sort)
+        and (.geth | keys | sort) == (["upstream_version", "ab_version"] | sort)
+        and (.geth.upstream_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+        and (.geth.ab_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*$"))
+        and (.prysm | keys | sort) == (["version", "beacon_image", "validator_image"] | sort)
+        and (.lighthouse | keys | sort) == (["version", "image"] | sort)
+        and (.deposit_cli | keys | sort) == (["version", "image"] | sort)
+        and ([.prysm.version, .lighthouse.version, .deposit_cli.version]
+             | all(test("^v[0-9]+\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?$")))
+        and ([.prysm.beacon_image, .prysm.validator_image,
+              .lighthouse.image, .deposit_cli.image]
+             | all(test("^[^[:space:]@]+:[^[:space:]@]+$")))
+        and ([.prysm.beacon_image, .prysm.validator_image,
+              .lighthouse.image, .deposit_cli.image]
+             | all((endswith(":latest") or endswith(":stable")) | not))
+        and (.prysm.beacon_image | endswith(":" + $lock.prysm.version))
+        and (.prysm.validator_image | endswith(":" + $lock.prysm.version))
+        and (.lighthouse.image | endswith(":" + $lock.lighthouse.version))
+        and (.deposit_cli.image | endswith(":" + $lock.deposit_cli.version))
+    ' "${versions_file}" >/dev/null \
+        || fail "Invalid client version lock: ${versions_file}"
+
+    default_prysm_beacon_image="${prysm_beacon_image_override:-$(jq -r '.prysm.beacon_image' "${versions_file}")}"
+    default_prysm_validator_image="${prysm_validator_image_override:-$(jq -r '.prysm.validator_image' "${versions_file}")}"
+    default_lighthouse_image="${lighthouse_image_override:-$(jq -r '.lighthouse.image' "${versions_file}")}"
+    deposit_cli_image="${deposit_cli_image_override:-$(jq -r '.deposit_cli.image' "${versions_file}")}"
+    prysm_release_version="${prysm_release_version_override:-$(jq -r '.prysm.version' "${versions_file}")}"
+    lighthouse_release_version="${lighthouse_release_version_override:-$(jq -r '.lighthouse.version' "${versions_file}")}"
+    deposit_cli_release_version="${deposit_cli_release_version_override:-$(jq -r '.deposit_cli.version' "${versions_file}")}"
+
+    if [[ "${deployment_mode}" == docker ]]; then
+        require_explicit_image_tag "${default_prysm_beacon_image}" "PRYSM_BEACON_IMAGE"
+        require_explicit_image_tag "${default_prysm_validator_image}" "PRYSM_VALIDATOR_IMAGE"
+        require_explicit_image_tag "${default_lighthouse_image}" "LIGHTHOUSE_IMAGE"
+        require_explicit_image_tag "${deposit_cli_image}" "DEPOSIT_CLI_IMAGE"
+    else
+        require_release_version "${prysm_release_version}" "PRYSM_RELEASE_VERSION"
+        require_release_version "${lighthouse_release_version}" "LIGHTHOUSE_RELEASE_VERSION"
+        require_release_version "${deposit_cli_release_version}" "DEPOSIT_CLI_RELEASE_VERSION"
+    fi
+
+    locked_geth_version="$(jq -r '.geth.ab_version' "${versions_file}")"
+    if [[ -n "${resolved_geth_version}" && "${resolved_geth_version}" != "${locked_geth_version}" ]]; then
+        fail "Network Release AB Geth asset ${resolved_geth_version} does not match client-versions.json ${locked_geth_version}."
+    fi
 }
 
 if [[ "${key_generation_only}" == true ]]; then
@@ -2073,10 +2178,12 @@ else
     resolve_release
     download_release
 fi
+load_client_versions
 
 if [[ "${key_generation_only}" == false ]]; then
     for required_file in genesis.json genesis.ssz config.yaml config.prysm.yaml \
-        deposit_contract_block.txt genesis_validators_root.txt deposit-settings.json; do
+        deposit_contract_block.txt genesis_validators_root.txt deposit-settings.json \
+        client-versions.json; do
         [[ -s "${share_dir}/${required_file}" ]] || fail "Missing required file: ${share_dir}/${required_file}"
     done
 fi

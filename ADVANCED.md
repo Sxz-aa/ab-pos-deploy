@@ -26,10 +26,24 @@ NETWORK=testnet
 RELEASE_PHASE=release
 GETH_VERSION=v1.17.5
 AB_GETH_VERSION=v1.17.5-ab.1
+PRYSM_VERSION=v7.1.8
+LIGHTHOUSE_VERSION=v8.2.2
+DEPOSIT_CLI_VERSION=v1.3.0
+GENESIS_GENERATOR_VERSION=6.1.6
 GETH_PLATFORM=linux/amd64
 ```
 
 `VERSION` defaults to `git describe --tags --always --dirty`. It controls the network archive filename; it does not control the AB Geth version.
+
+Display the complete version lock with:
+
+```bash
+make versions
+```
+
+The Network Release includes these runtime versions in `client-versions.json`.
+The installer reads that file in both Docker and binary modes, so installing the
+same Network Release selects the same client versions at a later date.
 
 Inspect the generated files and image:
 
@@ -236,38 +250,46 @@ For an execution hard fork, publish the future fork settings in `genesis.json` b
 
 Consensus fork settings are supplied through `config.yaml` and `config.prysm.yaml`. `genesis.ssz` remains the original consensus Genesis state for the network.
 
-### 5.1 Docker client updates
+### 5.1 Client version updates
 
-AB Geth uses the exact version tag derived from the selected Network Release. A new exact tag is pulled automatically when it is not present locally.
+Client versions are maintained together at the top of the `Makefile`. A normal
+`make` uses those values and does not query upstream projects for newer client
+versions.
 
-Prysm `stable` and Lighthouse `latest` are mutable defaults. Docker does not refresh an already cached mutable tag merely because a container is recreated. Pull the selected consensus image before repeating the installation command when an explicit consensus-client update is required:
-
-```bash
-docker pull offchainlabs/prysm-beacon-chain:stable
-docker pull offchainlabs/prysm-validator:stable   # Validator nodes only
-```
-
-or:
-
-```bash
-docker pull sigp/lighthouse:latest
-```
-
-Production operators may override these defaults with reviewed, pinned image tags:
+When a new upstream version is available, first test it on the target network by
+overriding the corresponding value on a test node. For Docker mode:
 
 ```bash
 sudo env \
-  PRYSM_BEACON_IMAGE=offchainlabs/prysm-beacon-chain:REVIEWED_TAG \
-  PRYSM_VALIDATOR_IMAGE=offchainlabs/prysm-validator:REVIEWED_TAG \
-  ./ab-pos.sh testnet prysm geth
+  PRYSM_BEACON_IMAGE=offchainlabs/prysm-beacon-chain:vNEW \
+  PRYSM_VALIDATOR_IMAGE=offchainlabs/prysm-validator:vNEW \
+  bash ab-pos.sh abcore testnet prysm --release vTESTED_RELEASE --validator
+
+sudo env LIGHTHOUSE_IMAGE=sigp/lighthouse:vNEW \
+  bash ab-pos.sh abcore testnet lighthouse --release vTESTED_RELEASE --validator
 ```
 
-For Lighthouse:
+For binary mode, override the GitHub Release version instead:
 
 ```bash
-sudo env LIGHTHOUSE_IMAGE=sigp/lighthouse:REVIEWED_TAG \
-  ./ab-pos.sh testnet lighthouse geth
+sudo env PRYSM_RELEASE_VERSION=vNEW \
+  bash ab-pos.sh abcore testnet prysm --binary --release vTESTED_RELEASE
+
+sudo env LIGHTHOUSE_RELEASE_VERSION=vNEW \
+  bash ab-pos.sh abcore testnet lighthouse --binary --release vTESTED_RELEASE
 ```
+
+Verify startup with both Genesis and Checkpoint Sync where applicable, execution
+and consensus connectivity, peer discovery, head and finality progress, Validator
+key import, attestations, and logs around the next configured fork. Test a new
+Deposit CLI with `DEPOSIT_CLI_IMAGE` or `DEPOSIT_CLI_RELEASE_VERSION` using an
+isolated key directory. Test a new Genesis Generator with
+`GENESIS_GENERATOR_IMAGE` using a separate Genesis configuration directory and
+review the generated files.
+
+After the tests pass, update the version in the `Makefile`, run `make versions`
+and `make check`, and publish a new Network Release. Its
+`client-versions.json` becomes the runtime lock for that Release.
 
 ## 6. Custom data and key locations
 

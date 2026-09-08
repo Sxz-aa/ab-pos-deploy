@@ -19,7 +19,7 @@ function fail() {
 
 function install_missing_dependencies() {
     local specification command_name package_name
-    local -a specifications=("jq:jq" "awk:mawk")
+    local -a specifications=("jq:jq" "awk:mawk" "make:make")
     local -a packages=()
     local -a privileged=()
     local -A selected_packages=()
@@ -183,13 +183,14 @@ Default configuration:
 
 Optional environment variables:
   GENESIS_CONFIG_DIR         Same as --config
-  GENESIS_GENERATOR_IMAGE    Generator image (default: ethpandaops/ethereum-genesis-generator:6.1.6)
+  GENESIS_GENERATOR_IMAGE    Override the image locked in the repository Makefile
   GENESIS_VERBOSE            Set to true to show complete generator output
   EXPECTED_VALIDATOR_COUNT   Override NUMBER_OF_VALIDATORS from values.env
   GENESIS_TIMESTAMP          Override GENESIS_TIMESTAMP from values.env
 
-For a production build, pin GENESIS_GENERATOR_IMAGE to a reviewed immutable
-image digest and independently review every generated file before publication.
+Test a new generator version with GENESIS_GENERATOR_IMAGE before updating the
+version lock in the repository Makefile. Review every generated file before
+publication.
 USAGE
 }
 
@@ -265,7 +266,6 @@ fi
 readonly genesis_mode prepare_deposit_settings export_output force_export config_dir deposits_dir mnemonic_file output_dir
 readonly requested_validator_count="${EXPECTED_VALIDATOR_COUNT:-}"
 readonly requested_genesis_timestamp="${GENESIS_TIMESTAMP:-}"
-readonly generator_image="${GENESIS_GENERATOR_IMAGE:-ethpandaops/ethereum-genesis-generator:6.1.6}"
 readonly generator_verbose="${GENESIS_VERBOSE:-false}"
 readonly requested_target_total_supply="${TARGET_TOTAL_SUPPLY:-}"
 readonly requested_deposit_amount_multiplier="${DEPOSIT_AMOUNT_MULTIPLIER:-}"
@@ -284,6 +284,12 @@ readonly requested_network_name="${NETWORK_NAME:-}"
     || fail "GENESIS_VERBOSE must be true or false."
 
 install_missing_dependencies
+locked_generator_image="$(make -s -C "${repository_dir}" genesis-generator-image)"
+[[ "${locked_generator_image}" =~ ^[^[:space:]@]+:[^[:space:]@]+$ \
+    && "${locked_generator_image}" != *:latest ]] \
+    || fail "The Makefile GENESIS_GENERATOR_IMAGE must contain an explicit version tag."
+readonly generator_image="${GENESIS_GENERATOR_IMAGE:-${locked_generator_image}}"
+readonly locked_generator_image
 
 required_commands=(jq awk)
 if [[ "${prepare_deposit_settings}" == false && "${export_output}" == false ]]; then

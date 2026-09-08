@@ -12,19 +12,40 @@ GETH_VERSION ?= v1.17.5
 AB_GETH_VERSION ?= $(GETH_VERSION)-ab.1
 GETH_IMAGE ?= ghcr.io/abdaodev/ab-geth
 GETH_PLATFORM ?= linux/amd64
+
+# Client version lock.
+# When a new upstream version is available, test it on the target network with
+# an environment-variable override, then update the version here.
+PRYSM_VERSION ?= v7.1.8
+LIGHTHOUSE_VERSION ?= v8.2.2
+DEPOSIT_CLI_VERSION ?= v1.3.0
+GENESIS_GENERATOR_VERSION ?= 6.1.6
+
+# Derived image names. Normally these do not need to be edited.
+PRYSM_BEACON_IMAGE ?= offchainlabs/prysm-beacon-chain:$(PRYSM_VERSION)
+PRYSM_VALIDATOR_IMAGE ?= offchainlabs/prysm-validator:$(PRYSM_VERSION)
+LIGHTHOUSE_IMAGE ?= sigp/lighthouse:$(LIGHTHOUSE_VERSION)
+DEPOSIT_CLI_IMAGE ?= ghcr.io/ethstaker/ethstaker-deposit-cli:$(DEPOSIT_CLI_VERSION)
+GENESIS_GENERATOR_IMAGE ?= ethpandaops/ethereum-genesis-generator:$(GENESIS_GENERATOR_VERSION)
+
 GETH_ARCH := $(word 2,$(subst /, ,$(GETH_PLATFORM)))
 GETH_ARTIFACT := $(BUILD_DIR)/ab-geth-$(AB_GETH_VERSION)-linux-$(GETH_ARCH)
 DEVP2P_ARTIFACT := $(BUILD_DIR)/devp2p-$(GETH_VERSION)-linux-$(GETH_ARCH)
 GETH_PATCHES := $(wildcard patches/go-ethereum/*.patch)
+CLIENT_VERSIONS_FILE := $(BUILD_DIR)/client-versions.json
 
 export ROOT_DIR BUILD_DIR CHAIN NETWORK VERSION RELEASE_PHASE
 export GETH_REPOSITORY GETH_VERSION AB_GETH_VERSION GETH_IMAGE GETH_PLATFORM
+export PRYSM_VERSION PRYSM_BEACON_IMAGE PRYSM_VALIDATOR_IMAGE
+export LIGHTHOUSE_VERSION LIGHTHOUSE_IMAGE
+export DEPOSIT_CLI_VERSION DEPOSIT_CLI_IMAGE
+export GENESIS_GENERATOR_VERSION GENESIS_GENERATOR_IMAGE CLIENT_VERSIONS_FILE
 
-.PHONY: all network testnet mainnet check geth geth-version devp2p verify-bootnodes docker push-docker clean
+.PHONY: all network testnet mainnet check versions client-versions geth geth-version genesis-generator-image devp2p verify-bootnodes docker push-docker clean
 
 all: network geth docker
 
-network: check
+network: check client-versions
 	./build.sh "$(VERSION)" "$(CHAIN)" "$(NETWORK)" "$(RELEASE_PHASE)"
 
 testnet:
@@ -33,7 +54,7 @@ testnet:
 mainnet:
 	$(MAKE) network CHAIN="$(CHAIN)" NETWORK=mainnet VERSION="$(VERSION)" RELEASE_PHASE="$(RELEASE_PHASE)"
 
-check:
+check: client-versions
 	./build.sh --check "$(CHAIN)" "$(NETWORK)" "$(RELEASE_PHASE)"
 	@test -x ab-pos.sh || { echo "ERROR: ab-pos.sh is missing or not executable." >&2; exit 1; }
 	@bash -n ab-pos.sh
@@ -61,6 +82,23 @@ $(GETH_ARTIFACT): scripts/prepare-geth-source.sh scripts/build-geth.sh scripts/g
 
 geth-version:
 	@printf '%s\n' "$(AB_GETH_VERSION)"
+
+genesis-generator-image:
+	@printf '%s\n' "$(GENESIS_GENERATOR_IMAGE)"
+
+client-versions:
+	@mkdir -p "$(BUILD_DIR)"
+	@jq -n '{geth: {upstream_version: env.GETH_VERSION, ab_version: env.AB_GETH_VERSION}, prysm: {version: env.PRYSM_VERSION, beacon_image: env.PRYSM_BEACON_IMAGE, validator_image: env.PRYSM_VALIDATOR_IMAGE}, lighthouse: {version: env.LIGHTHOUSE_VERSION, image: env.LIGHTHOUSE_IMAGE}, deposit_cli: {version: env.DEPOSIT_CLI_VERSION, image: env.DEPOSIT_CLI_IMAGE}}' >"$(CLIENT_VERSIONS_FILE).tmp"
+	@mv -f "$(CLIENT_VERSIONS_FILE).tmp" "$(CLIENT_VERSIONS_FILE)"
+
+versions:
+	@printf '%-24s %s\n' \
+		'AB Geth' '$(AB_GETH_VERSION)' \
+		'Geth upstream' '$(GETH_VERSION)' \
+		'Prysm' '$(PRYSM_VERSION)' \
+		'Lighthouse' '$(LIGHTHOUSE_VERSION)' \
+		'Deposit CLI' '$(DEPOSIT_CLI_VERSION)' \
+		'Genesis Generator' '$(GENESIS_GENERATOR_VERSION)'
 
 devp2p: $(DEVP2P_ARTIFACT)
 

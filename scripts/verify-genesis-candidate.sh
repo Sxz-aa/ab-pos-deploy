@@ -30,6 +30,8 @@ immutable_files=(
     config.yaml
     config.prysm.yaml
     deposit_contract_block.txt
+    deposit-settings.json
+    client-versions.json
 )
 optional_immutable_files=(
     deposit_contract.txt

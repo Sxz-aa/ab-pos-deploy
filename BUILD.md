@@ -4,12 +4,19 @@ This document is for repository maintainers who build Network Release assets and
 
 ## Versioning
 
-The repository uses one Network Release tag, such as `v1.2.3`. The tagged source tree pins the execution-client inputs in the `Makefile`:
+The repository uses one Network Release tag, such as `v1.2.3`. The tagged source tree pins all build and runtime client versions in the `Makefile`:
 
 ```make
 GETH_VERSION ?= v1.17.5
 AB_GETH_VERSION ?= $(GETH_VERSION)-ab.1
+PRYSM_VERSION ?= v7.1.8
+LIGHTHOUSE_VERSION ?= v8.2.2
+DEPOSIT_CLI_VERSION ?= v1.3.0
+GENESIS_GENERATOR_VERSION ?= 6.1.6
 ```
+
+Run `make versions` to display the active lock. The derived Docker image names
+normally do not need to be edited.
 
 `GETH_VERSION` must be an official upstream `vMAJOR.MINOR.PATCH` tag. `AB_GETH_VERSION` adds a positive AB patch revision.
 
