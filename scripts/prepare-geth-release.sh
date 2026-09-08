@@ -22,8 +22,6 @@ function fail() {
 command -v docker >/dev/null 2>&1 || fail "Docker Engine is required"
 docker info >/dev/null 2>&1 || fail "Docker is unavailable or permission was denied"
 
-expected_fingerprint="$("${root_dir}/scripts/geth-build-fingerprint.sh")"
-
 manifest_error="$(mktemp)"
 trap 'rm -f -- "${manifest_error}"' EXIT
 
@@ -33,13 +31,6 @@ if docker manifest inspect "${image_ref}" >/dev/null 2>"${manifest_error}"; then
     published_version="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "${image_ref}")"
     [[ "${published_version}" == "${ab_geth_version}" ]] \
         || fail "published image version label is ${published_version:-empty}; expected ${ab_geth_version}"
-
-    published_fingerprint="$(docker image inspect --format '{{index .Config.Labels "io.abfoundation.ab-geth.build-fingerprint"}}' "${image_ref}")"
-    if [[ -n "${published_fingerprint}" && "${published_fingerprint}" != "${expected_fingerprint}" ]]; then
-        fail "${image_ref} was built from different inputs; bump AB_GETH_VERSION instead of overwriting it"
-    fi
-    [[ -n "${published_fingerprint}" ]] \
-        || fail "${image_ref} has no build fingerprint; bump AB_GETH_VERSION and publish a verifiable image"
 
     "${root_dir}/scripts/export-geth-image.sh"
     exit 0

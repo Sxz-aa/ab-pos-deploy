@@ -173,15 +173,11 @@ The manual workflow:
 
 The selected Release controls `latest`; the workflow does not choose a different image merely because its version number is higher. Release jobs share one concurrency group so a tagged build and a promotion cannot run simultaneously.
 
-## Image immutability
+## Image tag immutability
 
-New images contain a build fingerprint derived from the pinned upstream version, target platform, patches, Dockerfiles, and relevant build scripts. When an exact image tag already exists:
+When an exact AB Geth image tag already exists, the workflow verifies its version label and reuses it instead of overwriting it. If the upstream Geth version, AB patches, or build inputs change, update `AB_GETH_VERSION` to a new `ab.N` revision before publishing.
 
-- A matching fingerprint permits reuse.
-- A different fingerprint fails the Release and requires a new AB revision.
-- A missing fingerprint fails the Release and requires a new AB revision.
-
-The workflow protects exact tags from accidental replacement. Registry administrators can still mutate tags manually, so production verification may additionally pin an image digest.
+Registry administrators can still mutate tags manually, so production verification may additionally pin an image digest.
 
 ## Manual image publication
 

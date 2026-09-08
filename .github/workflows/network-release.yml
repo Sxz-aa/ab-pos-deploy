@@ -40,6 +40,10 @@ jobs:
           printf 'kind=%s\n' "${kind}" >>"${GITHUB_OUTPUT}"
           printf 'prerelease=%s\n' "${prerelease}" >>"${GITHUB_OUTPUT}"
 
+      - name: Set up Docker Buildx
+        if: steps.release.outputs.kind != 'participation'
+        uses: docker/setup-buildx-action@v4
+
       - name: Log in to GitHub Container Registry
         if: steps.release.outputs.kind != 'participation'
         uses: docker/login-action@v4
@@ -172,7 +176,7 @@ jobs:
         env:
           GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
         run: |
-          ./scripts/prepare-geth-release.sh
+          make prepare-geth-release
 
       - name: Publish Genesis Participation Pre-release
         if: steps.release.outputs.kind == 'participation'

@@ -41,7 +41,7 @@ export LIGHTHOUSE_VERSION LIGHTHOUSE_IMAGE
 export DEPOSIT_CLI_VERSION DEPOSIT_CLI_IMAGE
 export GENESIS_GENERATOR_VERSION GENESIS_GENERATOR_IMAGE CLIENT_VERSIONS_FILE
 
-.PHONY: all network testnet mainnet check versions client-versions geth geth-version genesis-generator-image devp2p verify-bootnodes docker push-docker clean
+.PHONY: all network testnet mainnet check versions client-versions geth geth-version genesis-generator-image devp2p verify-bootnodes docker prepare-geth-release push-docker clean
 
 all: network geth docker
 
@@ -65,7 +65,6 @@ check: client-versions
 	@test -x scripts/verify-bootnodes.sh || { echo "ERROR: scripts/verify-bootnodes.sh is missing or not executable." >&2; exit 1; }
 	@bash -n scripts/build-devp2p.sh
 	@bash -n scripts/verify-bootnodes.sh
-	@test -x scripts/geth-build-fingerprint.sh || { echo "ERROR: scripts/geth-build-fingerprint.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/export-geth-image.sh || { echo "ERROR: scripts/export-geth-image.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/prepare-geth-release.sh || { echo "ERROR: scripts/prepare-geth-release.sh is missing or not executable." >&2; exit 1; }
 	@test -x scripts/update-geth-latest.sh || { echo "ERROR: scripts/update-geth-latest.sh is missing or not executable." >&2; exit 1; }
@@ -77,7 +76,7 @@ check: client-versions
 
 geth: $(GETH_ARTIFACT)
 
-$(GETH_ARTIFACT): scripts/prepare-geth-source.sh scripts/build-geth.sh scripts/geth-build-fingerprint.sh docker/geth/Dockerfile docker/geth/Runtime.Dockerfile $(GETH_PATCHES)
+$(GETH_ARTIFACT): scripts/prepare-geth-source.sh scripts/build-geth.sh docker/geth/Dockerfile docker/geth/Runtime.Dockerfile $(GETH_PATCHES)
 	./scripts/build-geth.sh
 
 geth-version:
@@ -111,8 +110,10 @@ verify-bootnodes: check devp2p
 docker: geth docker/geth/Runtime.Dockerfile scripts/build-geth-docker.sh
 	./scripts/build-geth-docker.sh
 
-push-docker:
+prepare-geth-release:
 	./scripts/prepare-geth-release.sh
+
+push-docker: prepare-geth-release
 	./scripts/update-geth-latest.sh
 
 clean:

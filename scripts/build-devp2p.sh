@@ -9,8 +9,6 @@ readonly geth_platform="${GETH_PLATFORM:-linux/amd64}"
 readonly platform_arch="${geth_platform#*/}"
 readonly artifact="${build_dir}/devp2p-${geth_version}-linux-${platform_arch}"
 readonly export_dir="${build_dir}/.devp2p-binary-export"
-readonly temporary_image="ab-devp2p-build:${geth_version}"
-container_id=""
 
 function fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -18,39 +16,24 @@ function fail() {
 }
 
 command -v docker >/dev/null 2>&1 || fail "Docker Engine is required to build devp2p"
+docker buildx version >/dev/null 2>&1 || fail "Docker Buildx is required to build devp2p"
 
 "${root_dir}/scripts/prepare-geth-source.sh"
 rm -rf -- "${export_dir}"
 mkdir -p "${export_dir}"
 
 function cleanup() {
-    if [[ -n "${container_id}" ]]; then
-        docker rm -f "${container_id}" >/dev/null 2>&1 || true
-    fi
-    docker image rm "${temporary_image}" >/dev/null 2>&1 || true
     rm -rf -- "${export_dir}"
 }
 trap cleanup EXIT
 
 printf 'Building devp2p %s for %s\n' "${geth_version}" "${geth_platform}"
-if docker buildx version >/dev/null 2>&1; then
-    docker buildx build \
-        --platform "${geth_platform}" \
-        --target binary \
-        --output "type=local,dest=${export_dir}" \
-        -f "${root_dir}/docker/geth/Devp2p.Dockerfile" \
-        "${source_dir}"
-else
-    printf 'Docker buildx is unavailable; using the classic Docker builder.\n'
-    DOCKER_BUILDKIT=0 docker build \
-        --platform "${geth_platform}" \
-        --target runtime \
-        -t "${temporary_image}" \
-        -f "${root_dir}/docker/geth/Devp2p.Dockerfile" \
-        "${source_dir}"
-    container_id="$(docker create "${temporary_image}")"
-    docker cp "${container_id}:/usr/local/bin/devp2p" "${export_dir}/devp2p"
-fi
+docker buildx build \
+    --platform "${geth_platform}" \
+    --target binary \
+    --output "type=local,dest=${export_dir}" \
+    -f "${root_dir}/docker/geth/Devp2p.Dockerfile" \
+    "${source_dir}"
 
 [[ -x "${export_dir}/devp2p" ]] || fail "Docker build did not export the devp2p binary"
 install -m 0755 "${export_dir}/devp2p" "${artifact}"
