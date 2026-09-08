@@ -265,17 +265,20 @@ sudo env \
   PRYSM_VALIDATOR_IMAGE=offchainlabs/prysm-validator:vNEW \
   bash ab-pos.sh abcore testnet prysm --release vTESTED_RELEASE --validator
 
-sudo env LIGHTHOUSE_IMAGE=sigp/lighthouse:vNEW \
+sudo env LIGHTHOUSE_IMAGE=ghcr.io/abdaodev/ab-lighthouse:vNEW-ab.1 \
   bash ab-pos.sh abcore testnet lighthouse --release vTESTED_RELEASE --validator
 ```
 
-For binary mode, override the GitHub Release version instead:
+For Prysm binary mode, override the upstream Release version. AB Lighthouse
+requires a patched binary and its SHA256 file:
 
 ```bash
 sudo env PRYSM_RELEASE_VERSION=vNEW \
   bash ab-pos.sh abcore testnet prysm --binary --release vTESTED_RELEASE
 
-sudo env LIGHTHOUSE_RELEASE_VERSION=vNEW \
+sudo env \
+  AB_LIGHTHOUSE_BINARY_URL=https://example.org/ab-lighthouse-vNEW-ab.1-linux-amd64 \
+  AB_LIGHTHOUSE_BINARY_SHA256_URL=https://example.org/ab-lighthouse-vNEW-ab.1-linux-amd64.sha256 \
   bash ab-pos.sh abcore testnet lighthouse --binary --release vTESTED_RELEASE
 ```
 
@@ -290,6 +293,33 @@ review the generated files.
 After the tests pass, update the version in the `Makefile`, run `make versions`
 and `make check`, and publish a new Network Release. Its
 `client-versions.json` becomes the runtime lock for that Release.
+
+AB Lighthouse is built from `LIGHTHOUSE_VERSION` with the patches in
+`patches/lighthouse/`. Change `AB_LIGHTHOUSE_VERSION` when its patches or
+build inputs change. Do not substitute the stock Lighthouse image: AB uses
+`BASE_REWARD_FACTOR=8`, which the upstream binary does not load from
+`config.yaml`.
+
+For a local Lighthouse test, build with `make lighthouse-docker` and package
+the network with `make network`. Use the local archive as described in
+section 3 and select `lighthouse` instead of `prysm`. Docker uses the
+AB Lighthouse image recorded in the archive's `client-versions.json`.
+For `--binary --release-url`, also set:
+
+```bash
+lighthouse_binary="$PWD/build/ab-lighthouse-$(make -s lighthouse-version)-linux-amd64"
+export AB_LIGHTHOUSE_BINARY_URL="file://${lighthouse_binary}"
+export AB_LIGHTHOUSE_BINARY_SHA256_URL="file://${lighthouse_binary}.sha256"
+```
+
+Pass these variables through `sudo env` alongside the AB Geth binary URLs.
+After startup, check that `/eth/v1/config/spec` reports
+`BASE_REWARD_FACTOR: "8"` and that the head slot and finality advance:
+
+```bash
+curl -fsS http://127.0.0.1:3500/eth/v1/config/spec | jq '.data | {CONFIG_NAME, BASE_REWARD_FACTOR}'
+curl -fsS http://127.0.0.1:3500/eth/v1/node/syncing | jq '.data'
+```
 
 ## 6. Custom data and key locations
 

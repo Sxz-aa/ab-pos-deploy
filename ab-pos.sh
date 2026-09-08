@@ -17,7 +17,8 @@ readonly deposit_cli_image_override="${DEPOSIT_CLI_IMAGE:-}"
 readonly geth_binary_url_override="${AB_GETH_BINARY_URL:-}"
 readonly geth_binary_checksum_url_override="${AB_GETH_BINARY_SHA256_URL:-}"
 readonly prysm_release_version_override="${PRYSM_RELEASE_VERSION:-}"
-readonly lighthouse_release_version_override="${LIGHTHOUSE_RELEASE_VERSION:-}"
+readonly lighthouse_binary_url_override="${AB_LIGHTHOUSE_BINARY_URL:-}"
+readonly lighthouse_binary_checksum_url_override="${AB_LIGHTHOUSE_BINARY_SHA256_URL:-}"
 readonly deposit_cli_release_version_override="${DEPOSIT_CLI_RELEASE_VERSION:-}"
 readonly gwei_per_token=1000000000
 readonly max_exact_integer=9007199254740991
@@ -471,6 +472,10 @@ geth_asset_name=""
 geth_asset_url=""
 geth_checksum_url=""
 resolved_geth_version=""
+lighthouse_asset_name=""
+lighthouse_asset_url=""
+lighthouse_checksum_url=""
+resolved_lighthouse_version=""
 geth_image=""
 platform_arch=""
 deployment_mode="docker"
@@ -493,7 +498,7 @@ default_prysm_validator_image=""
 default_lighthouse_image=""
 deposit_cli_image=""
 prysm_release_version=""
-lighthouse_release_version=""
+ab_lighthouse_version=""
 deposit_cli_release_version=""
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -1750,6 +1755,12 @@ function resolve_release() {
                 || fail "--release-url requires AB_GETH_BINARY_URL and AB_GETH_BINARY_SHA256_URL in binary mode."
             geth_asset_url="${geth_binary_url_override}"
             geth_checksum_url="${geth_binary_checksum_url_override}"
+            if [[ "${consensus_client}" == lighthouse ]]; then
+                [[ -n "${lighthouse_binary_url_override}" && -n "${lighthouse_binary_checksum_url_override}" ]] \
+                    || fail "--release-url with Lighthouse in binary mode requires AB_LIGHTHOUSE_BINARY_URL and AB_LIGHTHOUSE_BINARY_SHA256_URL."
+                lighthouse_asset_url="${lighthouse_binary_url_override}"
+                lighthouse_checksum_url="${lighthouse_binary_checksum_url_override}"
+            fi
         fi
         return
     fi
@@ -1805,6 +1816,24 @@ function resolve_release() {
     resolved_geth_version="${resolved_geth_version%-linux-${platform_arch}}"
     [[ "${resolved_geth_version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-ab\.[1-9][0-9]*$ ]] \
         || fail "Unable to parse the AB Geth version from ${geth_asset_name}."
+
+    if [[ "${consensus_client}" == lighthouse ]]; then
+        local lighthouse_asset_count
+        lighthouse_asset_count="$(jq -r --arg arch "${platform_arch}" '
+            [.assets[] | select(.name | test("^ab-lighthouse-v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*-linux-" + $arch + "$"))] | length
+        ' <<<"${release_json}")"
+        [[ "${lighthouse_asset_count}" -eq 1 ]] \
+            || fail "The selected Release must contain exactly one AB Lighthouse linux-${platform_arch} binary; found ${lighthouse_asset_count}."
+        lighthouse_asset_name="$(jq -r --arg arch "${platform_arch}" '
+            .assets[] | select(.name | test("^ab-lighthouse-v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*-linux-" + $arch + "$")) | .name
+        ' <<<"${release_json}")"
+        [[ "$(jq --arg name "${lighthouse_asset_name}.sha256" '[.assets[] | select(.name == $name)] | length' <<<"${release_json}")" -eq 1 ]] \
+            || fail "The selected Release must contain ${lighthouse_asset_name}.sha256."
+        lighthouse_asset_url="$(jq -r --arg name "${lighthouse_asset_name}" '.assets[] | select(.name == $name) | .browser_download_url' <<<"${release_json}")"
+        lighthouse_checksum_url="$(jq -r --arg name "${lighthouse_asset_name}.sha256" '.assets[] | select(.name == $name) | .browser_download_url' <<<"${release_json}")"
+        resolved_lighthouse_version="${lighthouse_asset_name#ab-lighthouse-}"
+        resolved_lighthouse_version="${resolved_lighthouse_version%-linux-${platform_arch}}"
+    fi
 
     if [[ "${deployment_mode}" == "docker" ]]; then
         release_owner="${release_repo%%/*}"
@@ -2118,7 +2147,7 @@ function load_client_versions() {
         and (.geth.upstream_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
         and (.geth.ab_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*$"))
         and (.prysm | keys | sort) == (["version", "beacon_image", "validator_image"] | sort)
-        and (.lighthouse | keys | sort) == (["version", "image"] | sort)
+        and (.lighthouse | keys | sort) == (["version", "ab_version", "image"] | sort)
         and (.deposit_cli | keys | sort) == (["version", "image"] | sort)
         and ([.prysm.version, .lighthouse.version, .deposit_cli.version]
              | all(test("^v[0-9]+\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?$")))
@@ -2130,7 +2159,9 @@ function load_client_versions() {
              | all((endswith(":latest") or endswith(":stable")) | not))
         and (.prysm.beacon_image | endswith(":" + $lock.prysm.version))
         and (.prysm.validator_image | endswith(":" + $lock.prysm.version))
-        and (.lighthouse.image | endswith(":" + $lock.lighthouse.version))
+        and (.lighthouse.ab_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*$"))
+        and (.lighthouse.ab_version | startswith($lock.lighthouse.version + "-ab."))
+        and (.lighthouse.image | endswith(":" + $lock.lighthouse.ab_version))
         and (.deposit_cli.image | endswith(":" + $lock.deposit_cli.version))
     ' "${versions_file}" >/dev/null \
         || fail "Invalid client version lock: ${versions_file}"
@@ -2140,7 +2171,7 @@ function load_client_versions() {
     default_lighthouse_image="${lighthouse_image_override:-$(jq -r '.lighthouse.image' "${versions_file}")}"
     deposit_cli_image="${deposit_cli_image_override:-$(jq -r '.deposit_cli.image' "${versions_file}")}"
     prysm_release_version="${prysm_release_version_override:-$(jq -r '.prysm.version' "${versions_file}")}"
-    lighthouse_release_version="${lighthouse_release_version_override:-$(jq -r '.lighthouse.version' "${versions_file}")}"
+    ab_lighthouse_version="$(jq -r '.lighthouse.ab_version' "${versions_file}")"
     deposit_cli_release_version="${deposit_cli_release_version_override:-$(jq -r '.deposit_cli.version' "${versions_file}")}"
 
     if [[ "${deployment_mode}" == docker ]]; then
@@ -2150,13 +2181,16 @@ function load_client_versions() {
         require_explicit_image_tag "${deposit_cli_image}" "DEPOSIT_CLI_IMAGE"
     else
         require_release_version "${prysm_release_version}" "PRYSM_RELEASE_VERSION"
-        require_release_version "${lighthouse_release_version}" "LIGHTHOUSE_RELEASE_VERSION"
+        require_release_version "${ab_lighthouse_version}" "AB Lighthouse version"
         require_release_version "${deposit_cli_release_version}" "DEPOSIT_CLI_RELEASE_VERSION"
     fi
 
     locked_geth_version="$(jq -r '.geth.ab_version' "${versions_file}")"
     if [[ -n "${resolved_geth_version}" && "${resolved_geth_version}" != "${locked_geth_version}" ]]; then
         fail "Network Release AB Geth asset ${resolved_geth_version} does not match client-versions.json ${locked_geth_version}."
+    fi
+    if [[ -n "${resolved_lighthouse_version}" && "${resolved_lighthouse_version}" != "${ab_lighthouse_version}" ]]; then
+        fail "Network Release AB Lighthouse asset ${resolved_lighthouse_version} does not match client-versions.json ${ab_lighthouse_version}."
     fi
 }
 
@@ -2739,60 +2773,17 @@ function install_prysm_binaries() {
 }
 
 function install_lighthouse_binary() {
-    local release_json
-    local release_tag
-    local release_arch
-    local asset_name
-    local asset_url
-    local asset_digest
-    local expected_sha256
-    local temporary_dir
-    local archive
-    local extracted_binary
+    local asset_url="${lighthouse_binary_url_override:-${lighthouse_asset_url}}"
+    local checksum_url="${lighthouse_binary_checksum_url_override:-${lighthouse_checksum_url}}"
+    local asset_name="ab-lighthouse-${ab_lighthouse_version}-linux-${platform_arch}"
 
-    release_json="$(github_release_json sigp/lighthouse "${lighthouse_release_version}")" \
-        || fail "Unable to query the Lighthouse Release."
-    release_tag="$(jq -r '.tag_name // empty' <<<"${release_json}")"
-    [[ "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
-        || fail "The Lighthouse Release has an invalid tag: ${release_tag:-empty}"
-    case "${platform_arch}" in
-        amd64) release_arch="x86_64" ;;
-        arm64) release_arch="aarch64" ;;
-        *) fail "Unsupported Lighthouse architecture: ${platform_arch}" ;;
-    esac
-    asset_name="lighthouse-${release_tag}-${release_arch}-unknown-linux-gnu.tar.gz"
-    asset_url="$(jq -r --arg name "${asset_name}" \
-        '[.assets[] | select(.name == $name)][0].browser_download_url // empty' <<<"${release_json}")"
-    asset_digest="$(jq -r --arg name "${asset_name}" \
-        '[.assets[] | select(.name == $name)][0].digest // empty' <<<"${release_json}")"
-    expected_sha256="${asset_digest#sha256:}"
-    [[ -n "${asset_url}" && "${asset_digest}" == sha256:* \
-        && "${expected_sha256}" =~ ^[0-9a-f]{64}$ ]] \
-        || fail "Lighthouse Release ${release_tag} does not provide a verifiable ${asset_name}."
-
-    temporary_dir="$(mktemp -d "${data_dir}/lighthouse-download.XXXXXX")"
-    archive="${temporary_dir}/${asset_name}"
-    if ! curl -fL "${asset_url}" -o "${archive}"; then
-        rm -rf -- "${temporary_dir}"
-        fail "Unable to download ${asset_name}."
+    if [[ -n "${lighthouse_binary_url_override}" || -n "${lighthouse_binary_checksum_url_override}" ]]; then
+        [[ -n "${lighthouse_binary_url_override}" && -n "${lighthouse_binary_checksum_url_override}" ]] \
+            || fail "Provide both AB_LIGHTHOUSE_BINARY_URL and AB_LIGHTHOUSE_BINARY_SHA256_URL."
     fi
-    if ! printf '%s  %s\n' "${expected_sha256}" "${archive}" | sha256sum -c -; then
-        rm -rf -- "${temporary_dir}"
-        fail "Checksum verification failed for ${asset_name}."
-    fi
-    if ! tar -xzf "${archive}" -C "${temporary_dir}"; then
-        rm -rf -- "${temporary_dir}"
-        fail "Unable to extract ${asset_name}."
-    fi
-    extracted_binary="$(find "${temporary_dir}" -type f -name lighthouse -print -quit)"
-    [[ -n "${extracted_binary}" ]] || {
-        rm -rf -- "${temporary_dir}"
-        fail "${asset_name} does not contain the Lighthouse binary."
-    }
-    install -m 0755 "${extracted_binary}" "${bin_dir}/lighthouse.new"
-    mv -f -- "${bin_dir}/lighthouse.new" "${bin_dir}/lighthouse"
-    rm -rf -- "${temporary_dir}"
-    printf '%s\n' "${release_tag}" >"${bin_dir}/lighthouse.version"
+    [[ -n "${asset_url}" && -n "${checksum_url}" ]] \
+        || fail "The selected Network Release does not provide a verified AB Lighthouse binary."
+    download_verified_binary "${asset_name}" "${asset_url}" "${checksum_url}" "${bin_dir}/lighthouse"
 }
 
 function write_binary_launcher() {

@@ -1,0 +1,57 @@
+From 39714475779e88c02538dd0db4d11a3197d0581f Mon Sep 17 00:00:00 2001
+From: Vie Yang <yangchenzhong@gmail.com>
+Date: Tue, 14 Jul 2026 16:19:25 +0800
+Subject: [PATCH] update base reward factor
+
+---
+ consensus/types/presets/mainnet/phase0.yaml | 4 ++--
+ consensus/types/presets/minimal/phase0.yaml | 2 +-
+ consensus/types/src/core/chain_spec.rs      | 2 +-
+ 3 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/consensus/types/presets/mainnet/phase0.yaml b/consensus/types/presets/mainnet/phase0.yaml
+index 00133ba36..976defe8d 100644
+--- a/consensus/types/presets/mainnet/phase0.yaml
++++ b/consensus/types/presets/mainnet/phase0.yaml
+@@ -61,7 +61,7 @@ VALIDATOR_REGISTRY_LIMIT: 1099511627776
+ # Reward and penalty quotients
+ # ---------------------------------------------------------------
+ # 2**6 (= 64)
+-BASE_REWARD_FACTOR: 64
++BASE_REWARD_FACTOR: 8
+ # 2**9 (= 512)
+ WHISTLEBLOWER_REWARD_QUOTIENT: 512
+ # 2**3 (= 8)
+@@ -85,4 +85,4 @@ MAX_ATTESTATIONS: 128
+ # 2**4 (= 16)
+ MAX_DEPOSITS: 16
+ # 2**4 (= 16)
+-MAX_VOLUNTARY_EXITS: 16
+\ No newline at end of file
++MAX_VOLUNTARY_EXITS: 16
+diff --git a/consensus/types/presets/minimal/phase0.yaml b/consensus/types/presets/minimal/phase0.yaml
+index d9a6a2b6c..ec7dfc83c 100644
+--- a/consensus/types/presets/minimal/phase0.yaml
++++ b/consensus/types/presets/minimal/phase0.yaml
+@@ -61,7 +61,7 @@ VALIDATOR_REGISTRY_LIMIT: 1099511627776
+ # Reward and penalty quotients
+ # ---------------------------------------------------------------
+ # 2**6 (= 64)
+-BASE_REWARD_FACTOR: 64
++BASE_REWARD_FACTOR: 8
+ # 2**9 (= 512)
+ WHISTLEBLOWER_REWARD_QUOTIENT: 512
+ # 2**3 (= 8)
+diff --git a/consensus/types/src/core/chain_spec.rs b/consensus/types/src/core/chain_spec.rs
+index f505c9f0d..8cf43325e 100644
+--- a/consensus/types/src/core/chain_spec.rs
++++ b/consensus/types/src/core/chain_spec.rs
+@@ -1082,7 +1082,7 @@ impl ChainSpec {
+             /*
+              * Reward and penalty quotients
+              */
+-            base_reward_factor: 64,
++            base_reward_factor: 8,
+             whistleblower_reward_quotient: 512,
+             proposer_reward_quotient: 8,
+             inactivity_penalty_quotient: u64::checked_pow(2, 26).expect("pow does not overflow"),

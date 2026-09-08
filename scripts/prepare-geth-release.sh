@@ -43,5 +43,5 @@ if ! grep -Eiq 'manifest unknown|no such manifest' "${manifest_error}"; then
 fi
 
 printf 'Published image %s does not exist; building it once.\n' "${image_ref}"
-make -C "${root_dir}" geth docker
+make -C "${root_dir}" geth geth-docker
 docker push "${image_ref}"

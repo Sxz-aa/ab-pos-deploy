@@ -115,7 +115,7 @@ Add `--binary` to any node command to download and run native client binaries in
 sudo bash ab-pos.sh testnet prysm geth --binary
 ```
 
-The selected Network Release supplies the patched AB Geth binary. Prysm and Lighthouse binaries are downloaded from their official GitHub Releases. With `--generate-keys --binary`, the EthStaker Deposit CLI binary is downloaded from its official GitHub Release. Client binaries are verified before installation under `/data/<chain>/<network>/bin/`.
+The selected Network Release supplies the patched AB Geth and AB Lighthouse binaries. Prysm binaries are downloaded from their official GitHub Release. With `--generate-keys --binary`, the EthStaker Deposit CLI binary is downloaded from its official GitHub Release. Client binaries are verified before installation under `/data/<chain>/<network>/bin/`.
 
 Binary processes run in detached sessions and write logs under `/data/<chain>/<network>/logs/`. They are not configured to start automatically after a server reboot.
 

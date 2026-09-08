@@ -126,7 +126,7 @@ function validate_client_versions() {
         and (.geth.upstream_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
         and (.geth.ab_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*$"))
         and (.prysm | keys | sort) == (["version", "beacon_image", "validator_image"] | sort)
-        and (.lighthouse | keys | sort) == (["version", "image"] | sort)
+        and (.lighthouse | keys | sort) == (["version", "ab_version", "image"] | sort)
         and (.deposit_cli | keys | sort) == (["version", "image"] | sort)
         and ([.prysm.version, .lighthouse.version, .deposit_cli.version]
              | all(test("^v[0-9]+\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?$")))
@@ -138,7 +138,9 @@ function validate_client_versions() {
              | all((endswith(":latest") or endswith(":stable")) | not))
         and (.prysm.beacon_image | endswith(":" + $lock.prysm.version))
         and (.prysm.validator_image | endswith(":" + $lock.prysm.version))
-        and (.lighthouse.image | endswith(":" + $lock.lighthouse.version))
+        and (.lighthouse.ab_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*$"))
+        and (.lighthouse.ab_version | startswith($lock.lighthouse.version + "-ab."))
+        and (.lighthouse.image | endswith(":" + $lock.lighthouse.ab_version))
         and (.deposit_cli.image | endswith(":" + $lock.deposit_cli.version))
     ' "${client_versions_file}" >/dev/null \
         || fail "invalid client version lock: ${client_versions_file}"
