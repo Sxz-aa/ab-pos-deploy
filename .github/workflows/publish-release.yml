@@ -86,37 +86,41 @@ jobs:
               || { printf 'ERROR: missing checksum for %s.\n' "${archive}" >&2; exit 1; }
           done
 
-          mapfile -t geth_binaries < <(
-            jq -r '.assets[].name' <<<"${release_json}" \
-              | sed -nE 's/^ab-geth-(v[0-9]+\.[0-9]+\.[0-9]+-ab\.[1-9][0-9]*)-linux-(amd64|arm64)$/\1 &/p'
-          )
-          [[ "${#geth_binaries[@]}" -ge 1 ]] \
-            || { printf 'ERROR: Release does not contain an AB Geth binary.\n' >&2; exit 1; }
-
-          declare -A geth_versions=()
-          for entry in "${geth_binaries[@]}"; do
-            version="${entry%% *}"
-            asset="${entry#* }"
-            geth_versions["${version}"]=1
-            jq -e --arg name "${asset}.sha256" \
-              'any(.assets[]; .name == $name)' <<<"${release_json}" >/dev/null \
-              || { printf 'ERROR: missing checksum for %s.\n' "${asset}" >&2; exit 1; }
+          for client in geth lighthouse; do
+            mapfile -t binaries < <(
+              jq -r '.assets[].name' <<<"${release_json}" \
+                | sed -nE "s/^ab-${client}-(v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*)-linux-(amd64|arm64)$/\\1 &/p"
+            )
+            [[ "${#binaries[@]}" -ge 1 ]] \
+              || { printf 'ERROR: Release does not contain an AB %s binary.\n' "${client}" >&2; exit 1; }
+            unset client_versions
+            declare -A client_versions=()
+            for entry in "${binaries[@]}"; do
+              version="${entry%% *}"
+              asset="${entry#* }"
+              client_versions["${version}"]=1
+              jq -e --arg name "${asset}.sha256" \
+                'any(.assets[]; .name == $name)' <<<"${release_json}" >/dev/null \
+                || { printf 'ERROR: missing checksum for %s.\n' "${asset}" >&2; exit 1; }
+            done
+            [[ "${#client_versions[@]}" -eq 1 ]] \
+              || { printf 'ERROR: Release contains more than one AB %s version.\n' "${client}" >&2; exit 1; }
+            version="${!client_versions[@]}"
+            printf 'ab_%s_version=%s\n' "${client}" "${version}" >>"${GITHUB_OUTPUT}"
+            printf 'Validated %s with AB %s %s.\n' "${RELEASE_TAG}" "${client}" "${version}"
           done
-          [[ "${#geth_versions[@]}" -eq 1 ]] \
-            || { printf 'ERROR: Release contains more than one AB Geth version.\n' >&2; exit 1; }
-
-          ab_geth_version="${!geth_versions[@]}"
           printf 'promote=true\n' >>"${GITHUB_OUTPUT}"
-          printf 'ab_geth_version=%s\n' "${ab_geth_version}" >>"${GITHUB_OUTPUT}"
-          printf 'Validated %s with AB Geth %s.\n' "${RELEASE_TAG}" "${ab_geth_version}"
 
-      - name: Verify immutable AB Geth image
+      - name: Verify immutable AB client images
         if: steps.release.outputs.promote == 'true'
         env:
           AB_GETH_VERSION: ${{ steps.release.outputs.ab_geth_version }}
           GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
+          AB_LIGHTHOUSE_VERSION: ${{ steps.release.outputs.ab_lighthouse_version }}
+          LIGHTHOUSE_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/ab-lighthouse
         run: |
           docker manifest inspect "${GETH_IMAGE}:${AB_GETH_VERSION}" >/dev/null
+          docker manifest inspect "${LIGHTHOUSE_IMAGE_REPOSITORY}:${AB_LIGHTHOUSE_VERSION}" >/dev/null
 
       - name: Promote GitHub Release
         if: github.event_name == 'workflow_dispatch' && steps.release.outputs.promote == 'true'
@@ -135,3 +139,11 @@ jobs:
           GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
         run: |
           ./scripts/update-geth-latest.sh
+
+      - name: Point AB Lighthouse latest to the promoted Release version
+        if: steps.release.outputs.promote == 'true'
+        env:
+          AB_LIGHTHOUSE_VERSION: ${{ steps.release.outputs.ab_lighthouse_version }}
+          LIGHTHOUSE_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/ab-lighthouse
+        run: |
+          ./scripts/update-lighthouse-latest.sh

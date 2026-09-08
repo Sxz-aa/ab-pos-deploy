@@ -16,6 +16,8 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      LIGHTHOUSE_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/ab-lighthouse
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -190,6 +192,10 @@ jobs:
             build/*.tar.gz
             build/*.tar.gz.sha256
 
+      - name: Prepare AB Lighthouse release artifacts
+        if: steps.release.outputs.kind != 'participation'
+        run: make prepare-lighthouse-release
+
       - name: Publish versioned GitHub Release
         if: steps.release.outputs.kind != 'participation'
         uses: softprops/action-gh-release@v3
@@ -202,3 +208,4 @@ jobs:
             build/*.tar.gz
             build/*.tar.gz.sha256
             build/ab-geth-*
+            build/ab-lighthouse-*

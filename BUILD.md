@@ -1,6 +1,6 @@
 # AB PoS Build and Release Guide
 
-This document is for repository maintainers who build Network Release assets and the patched AB Geth execution client.
+This document is for repository maintainers who build Network Release assets, AB Geth, and AB Lighthouse.
 
 ## Versioning
 
@@ -11,6 +11,7 @@ GETH_VERSION ?= v1.17.5
 AB_GETH_VERSION ?= $(GETH_VERSION)-ab.1
 PRYSM_VERSION ?= v7.1.8
 LIGHTHOUSE_VERSION ?= v8.2.2
+AB_LIGHTHOUSE_VERSION ?= $(LIGHTHOUSE_VERSION)-ab.1
 DEPOSIT_CLI_VERSION ?= v1.3.0
 GENESIS_GENERATOR_VERSION ?= 6.1.6
 ```
@@ -34,7 +35,17 @@ v1.17.6-ab.1 -> v1.17.6-ab.2
 
 Never reuse an AB Geth version for different build inputs.
 
+Lighthouse follows the same rule: `LIGHTHOUSE_VERSION` selects the upstream
+source tag, and `AB_LIGHTHOUSE_VERSION` selects the patched build revision.
+For example, use `v8.2.2-ab.2` after changing a patch or build input, or
+`v8.2.3-ab.1` after upgrading upstream. The AB patch sets
+`BASE_REWARD_FACTOR=8`; the stock Lighthouse binary is not interchangeable.
+
 ## Local builds
+
+Building clients requires Docker Engine with Buildx. On Ubuntu with
+`docker.io`, install `docker-buildx`; Docker CE uses `docker-buildx-plugin`.
+Check availability with `docker buildx version`.
 
 Validate the network files and build scripts:
 
@@ -58,16 +69,27 @@ make geth
 
 Every patch under `patches/go-ethereum/` must pass `git apply --check` against the pinned upstream tag. A failed check stops the build without fuzzy or partial application.
 
-Build the exact-version runtime image and Docker archive:
+Build the patched Lighthouse binary (Rust compilation can take substantial time):
+
+```bash
+make lighthouse
+```
+
+Every patch under `patches/lighthouse/` must also pass `git apply --check`.
+The binary uses the `portable,gnosis` features and the `maxperf` profile,
+matching the reference build in pos-docs.
+
+Build both exact-version runtime images:
 
 ```bash
 make docker
 ```
 
-`make docker` creates only the exact local image tag:
+`make docker` creates the exact local image tags:
 
 ```text
 ghcr.io/abdaodev/ab-geth:v1.17.5-ab.1
+ghcr.io/abdaodev/ab-lighthouse:v8.2.2-ab.1
 ```
 
 It does not move `latest`. Remove generated files under this repository's `build/` directory with:
@@ -76,20 +98,29 @@ It does not move `latest`. Remove generated files under this repository's `build
 make clean
 ```
 
-Running `make` without a target builds the network archive, patched binary, and Docker archive.
+Use `make geth-docker` or `make lighthouse-docker` to build only one image.
+Running `make` without a target builds the network archive, both patched
+binaries, and both Docker images.
 
 ## Release assets
 
-Every full Network Release is self-contained. GitHub packages one network archive for each populated `<chain>/<network>/share` directory, plus one AB Geth binary:
+Every full Network Release contains one network archive for each populated
+`<chain>/<network>/share` directory, plus AB Geth and AB Lighthouse binaries:
 
 ```text
 abcore-testnet-v1.2.3.tar.gz
 abcore-testnet-v1.2.3.tar.gz.sha256
 ab-geth-v1.17.5-ab.1-linux-amd64
 ab-geth-v1.17.5-ab.1-linux-amd64.sha256
+ab-lighthouse-v8.2.2-ab.1-linux-amd64
+ab-lighthouse-v8.2.2-ab.1-linux-amd64.sha256
 ```
 
-The same Release may contain archives for multiple chains and networks. Two Releases may contain the same AB Geth binary when the execution-client version has not changed.
+The same Release may contain archives for multiple chains and networks. Two
+Releases reuse the same client binaries when their AB versions have not changed.
+Local ARM64 builds can use `GETH_PLATFORM=linux/arm64` and
+`LIGHTHOUSE_PLATFORM=linux/arm64` with a builder supporting that platform.
+The GitHub workflow publishes Linux AMD64 by default.
 
 ## GitHub Release workflows
 
@@ -111,8 +142,9 @@ abcore-testnet-v1.2.3-rc.0.tar.gz
 abcore-testnet-v1.2.3-rc.0.tar.gz.sha256
 ```
 
-The archive contains only `deposit-settings.json`. The `rc.0` workflow does
-not build or publish AB Geth. Genesis Validator Operators use this exact tag
+The archive contains `deposit-settings.json` and `client-versions.json`.
+The `rc.0` workflow does not build or publish client binaries or images.
+Genesis Validator Operators use this exact tag
 with `ab-pos.sh --generate-keys --release`.
 
 ### Build a Genesis Candidate
@@ -149,13 +181,15 @@ git push <github-remote> v1.2.4
 For each Candidate or stable tag, the workflow performs the following operations:
 
 1. Validates and packages the network files.
-2. Checks whether `ghcr.io/abdaodev/ab-geth:<AB_GETH_VERSION>` already exists.
+2. Checks whether the exact AB Geth and AB Lighthouse image tags already exist.
 3. Builds and pushes the exact image only when it does not exist.
-4. Otherwise, pulls the exact image and extracts `/usr/local/bin/geth` without recompiling or overwriting the image.
-5. Produces the AB Geth binary checksum.
+4. Otherwise, pulls the exact image and extracts its client binary without recompiling or overwriting the image.
+5. Produces both client binary checksums.
 6. Publishes all files in a versioned GitHub Release without marking it as latest.
 
-Every versioned Release can be tested explicitly with `ab-pos.sh --release <tag>`. Candidate tags are Pre-releases and are never eligible for Latest or the AB Geth `latest` image tag. Building a versioned Release does not otherwise change either Latest pointer.
+Every versioned Release can be tested explicitly with `ab-pos.sh --release <tag>`.
+Candidate tags are Pre-releases and are never eligible for Latest or either
+client's `latest` image tag. Building a versioned Release does not move these pointers.
 
 ### Publish and promote a Release
 
@@ -165,17 +199,20 @@ To retry or perform the same promotion explicitly, open GitHub Actions, select *
 
 The manual workflow:
 
-1. Verifies every Network archive and checksum in the Release.
-2. Verifies that every AB Geth binary has a checksum and that all binaries use one AB Geth version.
-3. Verifies that the immutable GHCR image for that AB Geth version exists.
+1. Checks that every Network archive has a checksum asset.
+2. Checks that every AB client binary has a checksum asset and there is one version per client.
+3. Verifies that the immutable GHCR images for both client versions exist.
 4. Marks the selected versioned Release as the latest GitHub Release.
-5. Points the AB Geth `latest` image tag to the exact immutable image selected by that Network Release.
+5. Points both AB client `latest` image tags to the exact images selected by that Network Release.
 
 The selected Release controls `latest`; the workflow does not choose a different image merely because its version number is higher. Release jobs share one concurrency group so a tagged build and a promotion cannot run simultaneously.
 
 ## Image tag immutability
 
-When an exact AB Geth image tag already exists, the workflow verifies its version label and reuses it instead of overwriting it. If the upstream Geth version, AB patches, or build inputs change, update `AB_GETH_VERSION` to a new `ab.N` revision before publishing.
+When an exact AB client image tag already exists, the workflow verifies its version
+label and reuses it instead of overwriting it. If upstream source, patches, or
+build inputs change, update `AB_GETH_VERSION` or `AB_LIGHTHOUSE_VERSION`
+before publishing.
 
 Registry administrators can still mutate tags manually, so production verification may additionally pin an image digest.
 
@@ -187,4 +224,6 @@ The same guarded publication path is available locally after GHCR authentication
 make push-docker
 ```
 
-It prepares or reuses the exact image and points `latest` to `AB_GETH_VERSION`. It does not create, publish, or promote a GitHub Release.
+It prepares or reuses both exact images and points their `latest` tags to
+`AB_GETH_VERSION` and `AB_LIGHTHOUSE_VERSION`. It does not create, publish,
+or promote a GitHub Release.
