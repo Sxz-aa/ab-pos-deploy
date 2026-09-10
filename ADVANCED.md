@@ -474,6 +474,32 @@ sudo ./ab-pos.sh testnet prysm geth \
 
 The public firewall or cloud security group must allow Geth TCP/UDP port `30303`, Prysm TCP port `13000`, Prysm discovery UDP port `12000`, and Prysm QUIC UDP port `13000`. The same consensus ports are used by the installer for Lighthouse.
 
+### 6.3 Block Extra Data and Graffiti
+
+```bash
+sudo bash ab-pos.sh testnet prysm geth --validator \
+  --extra-data "AB node" \
+  --graffiti "AB validator"
+```
+
+`--extra-data` sets Geth's `--miner.extradata` in execution blocks it produces.
+`--graffiti` requires `--validator` and sets the Prysm or Lighthouse Validator's
+`--graffiti` in proposed beacon blocks. Both work in Docker and `--binary` mode.
+These are public block labels, not fee-recipient addresses or Genesis settings.
+
+Each value must be single-line text of at most 32 UTF-8 bytes (not 32 characters).
+Quote text containing spaces. Values beginning with `0x` are still text, not
+hex-encoded bytes. Clients may append version information to graffiti when space
+permits.
+
+Settings are saved in `<data-dir>/config/extra-data.txt` and
+`<data-dir>/config/graffiti.txt`. Subsequent installations reuse omitted values;
+pass `--extra-data ""` or `--graffiti ""` to restore the respective client default.
+Without a saved setting, client defaults are unchanged. To change these settings,
+rerun the installation command with the new values, keeping your usual options
+(such as `--genesis` or `--binary`). They cannot be combined with `--status`,
+`--restart`, other node operations, or key-only `--generate-keys`.
+
 ## 7. Advanced operations
 
 Use the same deployment mode used for installation.

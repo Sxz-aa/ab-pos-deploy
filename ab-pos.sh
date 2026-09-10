@@ -76,6 +76,10 @@ Core options:
   --withdrawal-address ADDRESS   Prompted when generating keys if omitted
   --amount AMOUNT                Per-validator Deposit amount; prompted if omitted
   --fee-recipient ADDRESS        Prompted when no saved value exists
+  --extra-data TEXT              Geth block extra data; at most 32 UTF-8 bytes
+  --graffiti TEXT                Validator graffiti; at most 32 UTF-8 bytes
+                                Requires --validator. Both settings are saved;
+                                pass "" to restore the client default.
   --validator-count NUMBER       Number of keys; prompted if omitted
   --validator-start-index NUMBER Default: 0
   --mnemonic-file PATH           Default: <data-dir>/keys/mnemonic.txt
@@ -463,6 +467,10 @@ operation="install"
 log_service=""
 withdrawal_address=""
 fee_recipient=""
+extra_data=""
+graffiti=""
+extra_data_selected=false
+graffiti_selected=false
 checkpoint_url=""
 release_version="latest"
 release_repo="${default_release_repo}"
@@ -573,6 +581,18 @@ while [[ "$#" -gt 0 ]]; do
         --archive) archive_mode=true ;;
         --withdrawal-address) withdrawal_address="${2:-}"; shift ;;
         --fee-recipient) fee_recipient="${2:-}"; shift ;;
+        --extra-data | --graffiti)
+            [[ "$#" -ge 2 && "$2" != --* ]] \
+                || fail "$1 requires text; use an empty quoted string to restore the client default."
+            if [[ "$1" == --extra-data ]]; then
+                extra_data="$2"
+                extra_data_selected=true
+            else
+                graffiti="$2"
+                graffiti_selected=true
+            fi
+            shift
+            ;;
         --validator-count) validator_count="${2:-}"; shift ;;
         --validator-start-index) validator_start_index="${2:-}"; shift ;;
         --amount) validator_deposit_amount="${2:-}"; shift ;;
@@ -636,6 +656,26 @@ if [[ -n "${deposit_settings_file}" && "${key_generation_only}" == false ]]; the
     fail "--deposit-settings is supported only with key-only --generate-keys."
 fi
 data_dir="${data_dir:-${root_dir}/${chain_name}/${network}}"
+
+function validate_block_text() {
+    local option="$1"
+    local value="$2"
+    local LC_ALL=C
+
+    (( ${#value} <= 32 )) \
+        || fail "${option} must be at most 32 UTF-8 bytes (received ${#value})."
+    [[ "${value}" != *$'\n'* && "${value}" != *$'\r'* ]] \
+        || fail "${option} must be a single line of text."
+}
+
+validate_block_text --extra-data "${extra_data}"
+validate_block_text --graffiti "${graffiti}"
+if [[ "${extra_data_selected}" == true || "${graffiti_selected}" == true ]]; then
+    [[ "${operation}" == install && "${key_generation_only}" == false ]] \
+        || fail "--extra-data and --graffiti require a node installation run, not a node operation or key-only generation."
+fi
+[[ "${graffiti_selected}" == false || "${validator_mode}" == true ]] \
+    || fail "--graffiti requires --validator."
 
 function detect_docker_consensus_client() {
     command -v docker >/dev/null 2>&1 || return 1
@@ -942,6 +982,39 @@ function fee_recipient_from_existing_runtime() {
     grep -oE -- '--suggested-fee-recipient=0x[0-9a-fA-F]{40}' "${launcher}" \
         | head -n 1 \
         | cut -d= -f2
+}
+
+function resolve_saved_block_metadata() {
+    local setting option setting_file selected
+    for setting in extra_data graffiti; do
+        [[ "${setting}" != graffiti || "${validator_mode}" == true ]] || continue
+        local -n value="${setting}"
+        selected="${setting}_selected"
+        option="${setting//_/-}"
+        setting_file="${config_dir}/${option}.txt"
+        if [[ "${!selected}" == false && -f "${setting_file}" ]]; then
+            value="$(<"${setting_file}")"
+        fi
+        validate_block_text "--${option}" "${value}"
+        if [[ "${!selected}" == true ]]; then
+            save_local_setting "${setting_file}" "${value}" 0644
+        fi
+    done
+
+    geth_metadata_args=()
+    validator_metadata_args=()
+    if [[ -n "${extra_data}" ]]; then
+        geth_metadata_args+=("--miner.extradata=${extra_data}")
+    fi
+    if [[ "${validator_mode}" == true && -n "${graffiti}" ]]; then
+        if [[ "${consensus_client}" == prysm ]]; then
+            # Prysm interprets "hex:" specially; encode to preserve all literal text.
+            require_command od
+            validator_metadata_args+=("--graffiti=hex:$(printf '%s' "${graffiti}" | od -An -v -tx1 | tr -d ' \n')")
+        else
+            validator_metadata_args+=("--graffiti=${graffiti}")
+        fi
+    fi
 }
 
 function password_file_from_existing_container() {
@@ -2690,6 +2763,8 @@ if [[ "${validator_mode}" == true ]]; then
     mkdir -p "${validator_data_dir}"
 fi
 
+resolve_saved_block_metadata
+
 network_id="$(jq -r '.config.chainId' "${share_dir}/genesis.json")"
 [[ "${network_id}" =~ ^[0-9]+$ ]] || fail "Invalid chainId in genesis.json."
 bootnodes=""
@@ -2927,6 +3002,7 @@ function deploy_binary_node() {
         --authrpc.vhosts=\*
         "--authrpc.jwtsecret=${jwt_secret_file}"
         --syncmode=full
+        "${geth_metadata_args[@]}"
     )
     [[ "${archive_mode}" == true ]] && geth_binary_args+=(--gcmode=archive)
     [[ -n "${bootnodes}" ]] && geth_binary_args+=("--bootnodes=${bootnodes}")
@@ -3005,6 +3081,7 @@ function deploy_binary_node() {
                 "--wallet-dir=${validator_data_dir}"
                 "--wallet-password-file=${password_file}"
                 "--suggested-fee-recipient=${fee_recipient}"
+                "${validator_metadata_args[@]}"
             )
             write_binary_launcher validator "${bin_dir}/prysm-validator" "${validator_binary_args[@]}"
         else
@@ -3016,6 +3093,7 @@ function deploy_binary_node() {
                 --beacon-nodes=http://127.0.0.1:3500
                 "--suggested-fee-recipient=${fee_recipient}"
                 --init-slashing-protection
+                "${validator_metadata_args[@]}"
             )
             write_binary_launcher validator "${bin_dir}/lighthouse" "${validator_binary_args[@]}"
         fi
@@ -3106,6 +3184,7 @@ geth_args=(
     --authrpc.port=8551
     --authrpc.vhosts=\*
     --authrpc.jwtsecret=/jwtsecret
+    "${geth_metadata_args[@]}"
 )
 if [[ "${archive_mode}" == true ]]; then
     geth_args+=(--syncmode=full --gcmode=archive)
@@ -3284,7 +3363,8 @@ if [[ "${validator_mode}" == true ]]; then
             --chain-config-file=/share/config.prysm.yaml \
             --beacon-rpc-provider=127.0.0.1:4000 \
             --wallet-dir=/wallet --wallet-password-file=/password.txt \
-            "--suggested-fee-recipient=${fee_recipient}" >/dev/null
+            "--suggested-fee-recipient=${fee_recipient}" \
+            "${validator_metadata_args[@]}" >/dev/null
     else
         import_lighthouse_keys
         docker run -d \
@@ -3300,7 +3380,8 @@ if [[ "${validator_mode}" == true ]]; then
             lighthouse vc --testnet-dir=/share --datadir=/validator-data \
             --beacon-nodes=http://127.0.0.1:3500 \
             "--suggested-fee-recipient=${fee_recipient}" \
-            --init-slashing-protection >/dev/null
+            --init-slashing-protection \
+            "${validator_metadata_args[@]}" >/dev/null
     fi
 fi
 
