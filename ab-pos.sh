@@ -1923,7 +1923,6 @@ function download_release() {
     local checksum_download_path
     local checksum_url
     local checksum_path
-    local checksum_available=false
     local expected_sha256
     local local_archive=false
     local previous_share_dir
@@ -1954,64 +1953,50 @@ function download_release() {
         || fail "Network Release archive must be named ${chain_name}-${network}-<version>.tar.gz; got ${archive_name}."
 
     if [[ "${local_archive}" == true ]]; then
-        [[ -s "${checksum_path}" ]] && checksum_available=true
+        [[ -r "${checksum_path}" && -s "${checksum_path}" ]] \
+            || fail "Required Release checksum is missing or unreadable: ${checksum_path}"
     else
         checksum_download_path="$(mktemp "${checksum_path}.download.XXXXXX")"
         if curl -fsSL "${checksum_url}" -o "${checksum_download_path}"; then
             mv -f -- "${checksum_download_path}" "${checksum_path}"
-            checksum_available=true
         else
             rm -f -- "${checksum_download_path}"
+            fail "Unable to download required Release checksum: ${checksum_url}. Installation stopped."
         fi
 
-        if [[ "${checksum_available}" == true ]]; then
-            expected_sha256="$(awk 'NR == 1 { print $1 }' "${checksum_path}")"
-            [[ "${expected_sha256}" =~ ^[0-9a-fA-F]{64}$ ]] \
-                || fail "Invalid checksum for ${archive_name}."
-            if [[ -s "${archive_path}" ]]; then
-                actual_sha256="$(sha256sum "${archive_path}" | awk '{ print $1 }')"
-            fi
-            if [[ "${actual_sha256,,}" == "${expected_sha256,,}" ]]; then
-                color "32" "Using cached network Release: ${archive_path}"
-            else
-                [[ ! -e "${archive_path}" ]] \
-                    || color "33" "Cached network Release failed checksum; downloading it again."
-                archive_download_path="$(mktemp "${archive_path}.download.XXXXXX")"
-                color "34" "Downloading network Release: ${network_release_url}"
-                if ! curl -fL "${network_release_url}" -o "${archive_download_path}"; then
-                    rm -f -- "${archive_download_path}"
-                    fail "Unable to download ${archive_name}."
-                fi
-                actual_sha256="$(sha256sum "${archive_download_path}" | awk '{ print $1 }')"
-                if [[ "${actual_sha256,,}" != "${expected_sha256,,}" ]]; then
-                    rm -f -- "${archive_download_path}"
-                    fail "Release checksum verification failed for ${archive_name}."
-                fi
-                mv -f -- "${archive_download_path}" "${archive_path}"
-            fi
+        expected_sha256="$(awk 'NR == 1 { print $1 }' "${checksum_path}")"
+        [[ "${expected_sha256}" =~ ^[0-9a-fA-F]{64}$ ]] \
+            || fail "Invalid checksum for ${archive_name}."
+        if [[ -s "${archive_path}" ]]; then
+            actual_sha256="$(sha256sum "${archive_path}" | awk '{ print $1 }')"
+        fi
+        if [[ "${actual_sha256,,}" == "${expected_sha256,,}" ]]; then
+            color "32" "Using cached network Release: ${archive_path}"
         else
-            color "33" "Release checksum asset was not found; downloading without cache reuse."
+            [[ ! -e "${archive_path}" ]] \
+                || color "33" "Cached network Release failed checksum; downloading it again."
             archive_download_path="$(mktemp "${archive_path}.download.XXXXXX")"
             color "34" "Downloading network Release: ${network_release_url}"
             if ! curl -fL "${network_release_url}" -o "${archive_download_path}"; then
                 rm -f -- "${archive_download_path}"
                 fail "Unable to download ${archive_name}."
             fi
+            actual_sha256="$(sha256sum "${archive_download_path}" | awk '{ print $1 }')"
+            if [[ "${actual_sha256,,}" != "${expected_sha256,,}" ]]; then
+                rm -f -- "${archive_download_path}"
+                fail "Release checksum verification failed for ${archive_name}."
+            fi
             mv -f -- "${archive_download_path}" "${archive_path}"
         fi
     fi
 
-    if [[ "${checksum_available}" == true ]]; then
-        expected_sha256="$(awk 'NR == 1 { print $1 }' "${checksum_path}")"
-        [[ "${expected_sha256}" =~ ^[0-9a-fA-F]{64}$ ]] \
-            || fail "Invalid checksum for ${archive_name}."
-        actual_sha256="$(sha256sum "${archive_path}" | awk '{ print $1 }')"
-        [[ "${actual_sha256,,}" == "${expected_sha256,,}" ]] \
-            || fail "Release checksum verification failed for ${archive_name}."
-        printf '%s: OK\n' "${archive_name}"
-    else
-        color "33" "Continuing without checksum verification."
-    fi
+    expected_sha256="$(awk 'NR == 1 { print $1 }' "${checksum_path}")"
+    [[ "${expected_sha256}" =~ ^[0-9a-fA-F]{64}$ ]] \
+        || fail "Invalid checksum for ${archive_name}."
+    actual_sha256="$(sha256sum "${archive_path}" | awk '{ print $1 }')"
+    [[ "${actual_sha256,,}" == "${expected_sha256,,}" ]] \
+        || fail "Release checksum verification failed for ${archive_name}."
+    printf '%s: OK\n' "${archive_name}"
 
     archive_listing="$(mktemp "${data_dir}/.release-contents.XXXXXX")"
     if ! tar -tzf "${archive_path}" > "${archive_listing}"; then
