@@ -167,8 +167,8 @@ Usage:
 
 Modes:
   prepare-deposit-settings
-             Write CONFIG_DIR/deposit-settings.json for Genesis Validator
-             Operators without building genesis.
+             Write CONFIG_DIR/deposit-settings.json for Genesis Validators
+             without building genesis.
   export     Copy generated public files into CHAIN_NAME/NETWORK_NAME/share.
              Existing files must match unless --force is used; unrelated
              network files are preserved.
@@ -312,7 +312,7 @@ for required_file in values.env el/genesis-config.yaml cl/config.yaml cl/mnemoni
 done
 
 # Load the reviewed workspace settings. Per-run calculated values are appended
-# only to a temporary copy and never modify the operator's values.env.
+# only to a temporary copy and never modify the user's values.env.
 set -a
 # shellcheck disable=SC1091
 source "${config_dir}/values.env"

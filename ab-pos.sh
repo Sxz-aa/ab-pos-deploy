@@ -50,7 +50,7 @@ Arguments:
   consensus-client    prysm or lighthouse; detected for an installed node
   execution-client    geth; optional because Geth is currently the only choice
 
-On an interactive installation, missing operator choices are requested from
+On an interactive installation, missing choices are requested from
 the terminal. Non-interactive installations must specify them explicitly.
 
 Node modes:

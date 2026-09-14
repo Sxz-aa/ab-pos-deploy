@@ -1,20 +1,20 @@
 # AB PoS Genesis Participation and Release Guide
 
-This guide covers the pre-genesis workflow for Genesis Validator Operators, Infrastructure Operators, and Network Operators.
+This guide covers the pre-genesis workflow for Genesis Validators, Infrastructure Providers, and Protocol Coordinators.
 
 ## 1. Scripts and lifecycle
 
 | Script | Responsibility | Primary user | Lifecycle stage |
 | --- | --- | --- | --- |
-| `generate-abpos-genesis.sh` | Export Deposit settings, then build and verify execution and consensus genesis files | Network Operator | Before participation and after deposit collection |
-| `ab-pos.sh` | Generate validator material or deploy Geth, a beacon node, and optionally a Validator Client | Genesis Validator and Infrastructure Operators | Before and after Genesis |
+| `generate-abpos-genesis.sh` | Export Deposit settings, then build and verify execution and consensus genesis files | Protocol Coordinator | Before participation and after deposit collection |
+| `ab-pos.sh` | Generate validator material or deploy Geth, a beacon node, and optionally a Validator Client | Genesis Validators and Infrastructure Providers | Before and after Genesis |
 
 On Debian and Ubuntu, each script installs missing runtime dependencies for
 its installation or generation command.
 
-Genesis Validator Operators and Infrastructure Operators use `ab-pos.sh` with
-Docker by default, or with native binaries by passing `--binary`. Network
-Operators build Genesis with Docker only through `generate-abpos-genesis.sh`.
+Genesis Validators and Infrastructure Providers use `ab-pos.sh` with
+Docker by default, or with native binaries by passing `--binary`. Protocol
+Coordinators build Genesis with Docker only through `generate-abpos-genesis.sh`.
 
 `ab-pos.sh --generate-keys` generates validator material without starting node
 services. `--genesis` only selects Genesis synchronization; it does not decide
@@ -24,49 +24,49 @@ whether keys are generated.
 
 | Participant | Responsibility |
 | --- | --- |
-| Genesis Validator Operator | Use the supplied Deposit settings to generate validator keys, back up the mnemonic, send `deposit_data-*.json`, then start the Candidate Release and return the displayed public enode and ENR. |
-| Infrastructure Operator | Start a long-lived public RPC node from the Candidate Release and return the displayed public enode and ENR. |
-| Network Operator | Build the Genesis Candidate, collect public node identities, publish the Final Genesis Release, and publish checkpoint URLs after finalization. |
+| Genesis Validator | Use the supplied Deposit settings to generate validator keys, back up the mnemonic, submit `deposit_data-*.json`, then start the Candidate Release with those keys and return the displayed public enode and ENR. |
+| Infrastructure Provider | Start a long-lived public RPC node from the Candidate Release and return the displayed public enode and ENR. |
+| Protocol Coordinator | Build the Genesis Candidate, collect public node identities, publish the Final Genesis Release, and publish checkpoint URLs after finalization. |
 
-The Network Operator never needs another operator's mnemonic, password, keystores, signing keys, or slashing protection data.
+The Protocol Coordinator never needs another participant's mnemonic, password, keystores, signing keys, or slashing protection data.
 
 ## 3. End-to-end genesis flow
 
 ```text
-Network Operator
+Protocol Coordinator
   -> review values.env and generate deposit-settings.json
   -> publish the settings-only vMAJOR.MINOR.PATCH-rc.0 Pre-release
 
-Genesis Validator Operator
-  -> run the version-pinned generator command from the Network Operator
+Genesis Validator
+  -> run the version-pinned generator command from the Protocol Coordinator
   -> generate mnemonic, password, keystores, and deposit data from rc.0
   -> back up the mnemonic and keep all private material secret
   -> send only deposit_data-*.json
 
-Network Operator
+Protocol Coordinator
   -> validate and combine deposit records
   -> build genesis.json and genesis.ssz
   -> publish a Genesis Candidate Pre-release
 
-Genesis Validator and Infrastructure Operators
+Genesis Validators and Infrastructure Providers
   -> run ab-pos.sh --genesis with the Candidate; Validator nodes add --validator
   -> send the displayed execution enode and consensus ENR
 
-Network Operator
+Protocol Coordinator
   -> publish the Final Genesis Release with the collected bootnodes
 
-Genesis Validator and Infrastructure Operators
+Genesis Validators and Infrastructure Providers
   -> run ab-pos.sh again with the Final Genesis Release
   -> confirm synchronization, finality, and Validator duties where applicable
 
-Network Operator
+Protocol Coordinator
   -> verify the published checkpoint endpoint after finalization
   -> mark the tested Final Release as latest for ordinary nodes
 ```
 
-## 4. Prepare Genesis participation settings (Network Operator)
+## 4. Prepare Genesis participation settings (Protocol Coordinator)
 
-Before any keys are generated, the Network Operator prepares the reviewed
+Before any keys are generated, the Protocol Coordinator prepares the reviewed
 Genesis workspace and exports the public Deposit settings:
 
 ```bash
@@ -87,7 +87,7 @@ The settings are derived from the reviewed `values.env`:
 
 The consensus Deposit amount equals the native-token amount multiplied by
 `DEPOSIT_AMOUNT_MULTIPLIER` and divided by `DEPOSIT_AMOUNT_DIVISOR`. These
-values are published as `multiplier` and `divisor`; Validator Operators do not
+values are published as `multiplier` and `divisor`; Genesis Validators do not
 configure them locally. Genesis premine calculation applies the same ratio in
 the opposite direction.
 
@@ -121,7 +121,7 @@ GitHub publishes `${CHAIN_NAME}-${NETWORK_NAME}-${participation_tag}.tar.gz`
 with only `deposit-settings.json` and its checksum. It does not build or
 publish AB Geth for `rc.0`.
 
-## 5. Generate Genesis validator material (Genesis Validator Operator)
+## 5. Generate Genesis validator material (Genesis Validator)
 
 ### 5.1 Prerequisites
 
@@ -169,14 +169,14 @@ The example generates:
 | `mnemonic.txt` | Restores the complete validator key set | Never |
 | `pwd.txt` | Decrypts validator keystores | Never |
 | `keystore-*.json` | Contains validator signing keys | Never |
-| `deposit_data-*.json` | Public records used to build genesis | Network Operator only |
+| `deposit_data-*.json` | Public records used to build genesis | Protocol Coordinator only |
 
 One deposit data file normally contains an array with many validator records. There is no requirement to create one deposit file per validator.
 
 ### 5.4 Submit Deposit Data
 
 Back up `mnemonic.txt` before the handoff. Keep `pwd.txt` and all keystores
-private. Then provide only the deposit data file to the Network Operator
+private. Then provide only the deposit data file to the Protocol Coordinator
 through the approved secure channel.
 
 Useful local checks:
@@ -186,18 +186,18 @@ jq 'length' /data/abcore/testnet/keys/validator_keys/deposit_data-*.json
 sha256sum /data/abcore/testnet/keys/validator_keys/deposit_data-*.json
 ```
 
-## 6. Build the Genesis Candidate (Network Operator)
+## 6. Build the Genesis Candidate (Protocol Coordinator)
 
 ### 6.1 Record and validate accepted Deposit Data
 
-The Network Operator should record the submitting operator, expected validator
+The Protocol Coordinator should record the submitting Genesis Validator, expected validator
 count, file checksum, withdrawal address, and accepted network parameters
 without taking custody of any private key material. The Genesis builder
 validates every submitted amount against `MIN_ACTIVATION_AMOUNT` and
 `MAX_DEPOSIT_AMOUNT` and calculates total stake from the accepted Deposit Data;
-different operators do not need to select the same amount.
+different Genesis Validators do not need to select the same amount.
 
-The Network Operator must continue with the same reviewed configuration that
+The Protocol Coordinator must continue with the same reviewed configuration that
 produced the `rc.0` settings. Changing any Deposit parameter now makes the
 builder stop.
 
@@ -244,9 +244,9 @@ git tag -s "${candidate_tag}" -m "AB PoS ${CHAIN_NAME}/${NETWORK_NAME} Genesis C
 git push origin main "${candidate_tag}"
 ```
 
-## 7. Start Candidate nodes and submit node information (Genesis Validator and Infrastructure Operators)
+## 7. Start Candidate nodes and submit node information (Genesis Validators and Infrastructure Providers)
 
-Every Genesis Validator Operator starts the Candidate with the same keys used in the submitted deposit data:
+Every Genesis Validator starts the Candidate with the same keys used in the submitted deposit data:
 
 ```bash
 candidate_tag="v1.0.0-rc.1"
@@ -261,7 +261,7 @@ sudo bash ab-pos.sh testnet prysm geth \
 
 The installer asks for the fee recipient on the first Validator installation.
 
-Every Infrastructure Operator contributing a long-lived RPC node runs:
+Every Infrastructure Provider contributing a long-lived RPC node runs:
 
 ```bash
 sudo bash ab-pos.sh testnet prysm geth \
@@ -278,11 +278,11 @@ Genesis node information:
   Consensus ENR: enr:...
 ```
 
-Send the displayed enode and ENR to the Network Operator. Never send files from `keys/` or `config/`.
+Send the displayed enode and ENR to the Protocol Coordinator. Never send files from `keys/` or `config/`.
 
-## 8. Publish the Final Release (Network Operator)
+## 8. Publish the Final Release (Protocol Coordinator)
 
-The Network Operator adds one consensus ENR per line to `bootstrap_nodes.txt`,
+The Protocol Coordinator adds one consensus ENR per line to `bootstrap_nodes.txt`,
 one execution enode per line to `bootstrap_nodes_execution.txt`, and the fixed
 Checkpoint endpoint to `checkpoint_sync_urls.txt`. Then commit these files and
 push the Final tag. GitHub Actions validates the files, builds the artifacts,
@@ -311,7 +311,7 @@ Run the live verification while every submitted node is online. It validates eac
 When a matching Candidate Release exists, the Final Release workflow permits
 only the two node lists and Checkpoint endpoints to change.
 
-## 9. Restart nodes with the Final Release (Genesis Validator and Infrastructure Operators)
+## 9. Restart nodes with the Final Release (Genesis Validators and Infrastructure Providers)
 
 After the Final Release is available, every Candidate participant reruns the same node command with the Final tag.
 
@@ -335,7 +335,7 @@ sudo bash ab-pos.sh testnet prysm geth \
 The installer preserves the chain data, imported validator wallet, fee
 recipient, JWT, and P2P identities.
 
-## 10. Verify the Final network and mark the Release as latest (Network Operator)
+## 10. Verify the Final network and mark the Release as latest (Protocol Coordinator)
 
 After the network finalizes, verify execution and consensus synchronization,
 peer connectivity, finality, Validator duties, and the Checkpoint endpoint.

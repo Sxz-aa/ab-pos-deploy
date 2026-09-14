@@ -144,7 +144,7 @@ abcore-testnet-v1.2.3-rc.0.tar.gz.sha256
 
 The archive contains `deposit-settings.json` and `client-versions.json`.
 The `rc.0` workflow does not build or publish client binaries or images.
-Genesis Validator Operators use this exact tag
+Genesis Validators use this exact tag
 with `ab-pos.sh --generate-keys --release`.
 
 ### Build a Genesis Candidate
@@ -156,7 +156,7 @@ git tag -s v1.2.3-rc.1 -m "AB PoS testnet Genesis Candidate v1.2.3-rc.1"
 git push <github-remote> v1.2.3-rc.1
 ```
 
-The workflow publishes this tag as a complete GitHub Pre-release. Candidate validation permits missing or empty `bootstrap_nodes.txt` and `bootstrap_nodes_execution.txt`. Genesis Validator Operators and Infrastructure Operators install this exact tag on their long-lived nodes, then return the execution enode and consensus ENR printed by `ab-pos.sh`.
+The workflow publishes this tag as a complete GitHub Pre-release. Candidate validation permits missing or empty `bootstrap_nodes.txt` and `bootstrap_nodes_execution.txt`. Genesis Validators and Infrastructure Providers install this exact tag on their long-lived nodes, then return the execution enode and consensus ENR printed by `ab-pos.sh`.
 
 ### Build the Final Genesis Release
 
