@@ -2929,6 +2929,28 @@ function chain_config_files_match() {
         == "$(jq -cS '.config' "${release_genesis}")" ]]
 }
 
+function initialized_genesis_matches_release() {
+    local recorded_checksum
+    local release_checksum
+
+    # dumpgenesis normalizes fields and only .config is compared above. Skip
+    # init only for the exact input previously accepted by Geth as well.
+    [[ -r "${geth_data_dir}/.initialized-genesis.sha256" ]] || return 1
+    recorded_checksum="$(< "${geth_data_dir}/.initialized-genesis.sha256")"
+    release_checksum="$(sha256sum "${share_dir}/genesis.json")" || return 2
+    [[ "${recorded_checksum}" == "${release_checksum%% *}" ]]
+}
+
+function record_initialized_genesis() {
+    local checksum
+    local checksum_file
+
+    checksum="$(sha256sum "${share_dir}/genesis.json")"
+    checksum_file="$(mktemp "${geth_data_dir}/.initialized-genesis.XXXXXX")"
+    printf '%s\n' "${checksum%% *}" > "${checksum_file}"
+    mv -f -- "${checksum_file}" "${geth_data_dir}/.initialized-genesis.sha256"
+}
+
 function geth_binary_chain_config_matches_release() {
     local stored_genesis
     local dump_log
@@ -2947,7 +2969,8 @@ function geth_binary_chain_config_matches_release() {
     rm -f -- "${stored_genesis}"
     (( status <= 1 )) \
         || fail "Unable to compare the stored and Release Geth chain configurations."
-    return "${status}"
+    (( status == 0 )) || return "${status}"
+    initialized_genesis_matches_release
 }
 
 function deploy_binary_node() {
@@ -2985,6 +3008,7 @@ function deploy_binary_node() {
         color "34" "Updating Geth chain configuration from genesis.json."
         "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
     fi
+    record_initialized_genesis
     persist_generated_geth_nodekey
 
     geth_binary_args=(
@@ -3147,7 +3171,8 @@ function geth_chain_config_matches_release() {
     rm -f -- "${stored_genesis}"
     (( status <= 1 )) \
         || fail "Unable to compare the stored and Release Geth chain configurations."
-    return "${status}"
+    (( status == 0 )) || return "${status}"
+    initialized_genesis_matches_release
 }
 
 replace_role_containers execution "${geth_data_dir}"
@@ -3169,6 +3194,7 @@ else
         "${geth_image}" \
         --datadir=/data init /share/genesis.json
 fi
+record_initialized_genesis
 persist_generated_geth_nodekey
 geth_args=(
     --datadir=/data
