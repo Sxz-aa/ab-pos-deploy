@@ -1,0 +1,44 @@
+From 170ee344f26b25e51b02577d2849945baf316454 Mon Sep 17 00:00:00 2001
+From: jack <infinityjack@pm.me>
+Date: Mon, 14 Sep 2026 09:55:58 +0000
+Subject: [PATCH] deposit: scale deposit amounts by 1000 gwei
+
+Record the existing AB DepositContract modification. This patch does not
+change the minimum msg.value requirement (1 ether, or 1 native AB).
+
+Base: Ethereum mainnet DepositContract source, mirrored in abchain/pos-docs
+at commit ac53b3bbcccf2c5127fc484d580350518caa6a2c:
+  contracts/ethereum/deposit_contract.sol
+Base source SHA-256:
+  2a8db249155e8502e1132f14410b8d7b2a924512723ed07a08167477d8f8c073
+Patched source SHA-256:
+  8e0d806b7d78a8f54492caff8a3eaed0513ef08caba7405a37042f038a4cdf51
+
+Apply in a directory containing the base deposit_contract.sol.
+Compilation settings recorded by pos-docs: solc v0.6.11+commit.5ef660b1,
+optimizer enabled with 5000000 runs, default EVM version.
+
+This is a source reference patch, not a new build step. Existing Genesis
+bytecode is unchanged. Verify compiled runtime bytecode against Genesis
+before replacing any preloaded contract.
+---
+ deposit_contract.sol | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/deposit_contract.sol b/deposit_contract.sol
+index 21d0b89..d8e6e9c 100644
+--- a/deposit_contract.sol
++++ b/deposit_contract.sol
+@@ -111,8 +111,8 @@ contract DepositContract is IDepositContract, ERC165 {
+ 
+         // Check deposit amount
+         require(msg.value >= 1 ether, "DepositContract: deposit value too low");
+-        require(msg.value % 1 gwei == 0, "DepositContract: deposit value not multiple of gwei");
+-        uint deposit_amount = msg.value / 1 gwei;
++        require(msg.value % 1000 gwei == 0, "DepositContract: deposit value not multiple of 1000 gwei");
++        uint deposit_amount = msg.value / 1000 gwei;
+         require(deposit_amount <= type(uint64).max, "DepositContract: deposit value too high");
+ 
+         // Emit `DepositEvent` log
+-- 
+2.43.0
