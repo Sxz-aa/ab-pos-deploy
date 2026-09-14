@@ -28,6 +28,8 @@ whether keys are generated.
 | Infrastructure Provider | Start a long-lived public RPC node from the Candidate Release and return the displayed public enode and ENR. |
 | Protocol Coordinator | Build the Genesis Candidate, collect public node identities, publish the Final Genesis Release, and publish checkpoint URLs after finalization. |
 
+A Genesis Validator participant may be an individual or a team managing one or more validator keys.
+
 The Protocol Coordinator never needs another participant's mnemonic, password, keystores, signing keys, or slashing protection data.
 
 ## 3. End-to-end genesis flow
