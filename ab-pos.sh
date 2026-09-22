@@ -3013,7 +3013,12 @@ function deploy_binary_node() {
         --syncmode=full
         "${geth_metadata_args[@]}"
     )
-    [[ "${archive_mode}" == true ]] && geth_binary_args+=(--gcmode=archive)
+    if [[ "${archive_mode}" == true ]]; then
+        geth_binary_args+=(
+            --gcmode=archive
+            --history.state=0
+        )
+    fi
     [[ -n "${bootnodes}" ]] && geth_binary_args+=("--bootnodes=${bootnodes}")
     [[ -z "${node_public_ip}" ]] || geth_binary_args+=("--nat=extip:${node_public_ip}")
     write_binary_launcher geth "${bin_dir}/geth" "${geth_binary_args[@]}"
@@ -3198,7 +3203,11 @@ geth_args=(
     "${geth_metadata_args[@]}"
 )
 if [[ "${archive_mode}" == true ]]; then
-    geth_args+=(--syncmode=full --gcmode=archive)
+    geth_args+=(
+        --syncmode=full
+        --gcmode=archive
+        --history.state=0
+    )
 else
     geth_args+=(--syncmode=full)
 fi
