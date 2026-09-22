@@ -964,6 +964,50 @@ function save_local_setting() {
     mv -f -- "${temporary_file}" "${destination}"
 }
 
+function resolve_archive_mode() {
+    local setting_file="${config_dir}/archive-mode.txt"
+    local container_name
+    local arguments
+    local launcher="${run_dir}/geth.sh"
+
+    if [[ "${archive_mode}" == false ]]; then
+        if [[ -e "${setting_file}" ]]; then
+            archive_mode="$(<"${setting_file}")"
+            [[ "${archive_mode}" == true || "${archive_mode}" == false ]] \
+                || fail "Invalid archive mode in ${setting_file}; expected true or false."
+        fi
+        # Read the installed launch configuration as well, including stopped
+        # containers. Never execute a binary launcher to inspect its options.
+        if [[ "${archive_mode}" == false && "${deployment_mode}" == docker ]]; then
+            container_name="$(existing_role_container "${geth_container}" execution "${geth_data_dir}")"
+            if [[ -n "${container_name}" ]]; then
+                arguments="$(docker container inspect "${container_name}" --format '{{json .Config.Cmd}}')" \
+                    || fail "Unable to inspect the installed Geth archive mode."
+                archive_mode="$(jq -er '
+                    if type != "array" then error("expected Geth arguments") else
+                        . as $args | any(range(length); . as $i |
+                            $args[$i] == "--gcmode=archive" or
+                            ($args[$i] == "--gcmode" and $args[$i + 1] == "archive"))
+                    end | tostring
+                ' <<<"${arguments}")" \
+                    || fail "Unable to parse the installed Geth archive mode."
+            fi
+        elif [[ "${archive_mode}" == false && "${deployment_mode}" == binary && -f "${launcher}" ]]; then
+            if grep -Eq -- '(^|[[:space:]])--gcmode(=|[[:space:]]+)archive([[:space:]]|$)' "${launcher}"; then
+                archive_mode=true
+            fi
+        fi
+        [[ "${archive_mode}" != true ]] || color "34" "Preserving the installed Geth archive mode."
+    fi
+
+    if [[ "${archive_mode}" == true ]]; then
+        # Preserve the intent before replacing containers/launchers, so a failed
+        # installation cannot silently downgrade the next installation attempt.
+        save_local_setting "${setting_file}" true 0644
+        color "33" "Archive mode retains state history; previously pruned history is not restored. A complete archive requires full execution-layer sync from genesis with history retention enabled."
+    fi
+}
+
 function fee_recipient_from_existing_runtime() {
     local container_name
     local launcher
@@ -1683,6 +1727,7 @@ if [[ "${key_generation_only}" == false ]]; then
         prysm) mkdir -p "${prysm_config_dir}" ;;
         lighthouse) mkdir -p "${lighthouse_network_dir}" ;;
     esac
+    resolve_archive_mode
 fi
 
 function ensure_local_jwt_secret() {

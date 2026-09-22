@@ -236,12 +236,12 @@ Re-run the same installation command to apply a newer selected Network Release o
 During each installation run, the script:
 
 1. Resolves and downloads the selected Network Release.
-2. Verifies its checksum when the checksum is available.
+2. Verifies the required SHA256 checksum.
 3. Extracts and validates it in a temporary directory.
 4. Replaces the public `share/` directory without mixing old and new files.
 5. Preserves execution data, consensus data, validator data, keys, JWT, and logs.
 6. Stops the running clients.
-7. Runs `geth init` with the updated `genesis.json` even when chaindata already exists.
+7. Runs `geth init` when the Genesis file or chain configuration changes.
 8. Recreates the launch configuration and restarts the selected services.
 
 Re-running `geth init` is required for execution-layer hard-fork configuration updates. Geth accepts a compatible updated chain configuration when the Genesis block hash remains unchanged. It rejects a different Genesis block or a fork configuration that conflicts with the imported chain.
@@ -320,6 +320,27 @@ After startup, check that `/eth/v1/config/spec` reports
 curl -fsS http://127.0.0.1:3500/eth/v1/config/spec | jq '.data | {CONFIG_NAME, BASE_REWARD_FACTOR}'
 curl -fsS http://127.0.0.1:3500/eth/v1/node/syncing | jq '.data'
 ```
+
+### 5.2 Archive storage and repeated installation
+
+Use `--archive` to enable Geth historical state retention. Docker and binary
+deployments use `--syncmode=full --gcmode=archive --history.state=0`.
+
+On later installations, archive mode is preserved from the existing execution
+container, binary launcher, or `<data-dir>/config/archive-mode.txt`. Stopped
+containers are also inspected. You do not need to repeat `--archive`.
+
+To enable archive mode on an existing node, rerun installation with `--archive`.
+`--restart` only restarts the existing launch configuration.
+
+Enabling archive mode does **not** recover previously pruned historical state.
+For an existing node, it retains the available history and subsequent states.
+A complete archive requires an execution-layer full sync from Genesis with
+history retention enabled, or restoration of a complete archive backup.
+Use a separate execution database when rebuilding; do not delete validator keys
+or slashing protection data. Historical state queries also require Geth's state
+indexing to finish. The Beacon client's checkpoint setting does not replace
+execution-layer historical state synchronization.
 
 ## 6. Custom data and key locations
 
