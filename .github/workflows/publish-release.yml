@@ -86,7 +86,7 @@ jobs:
               || { printf 'ERROR: missing checksum for %s.\n' "${archive}" >&2; exit 1; }
           done
 
-          for client in geth lighthouse; do
+          for client in geth reth lighthouse; do
             mapfile -t binaries < <(
               jq -r '.assets[].name' <<<"${release_json}" \
                 | sed -nE "s/^ab-${client}-(v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*)-linux-(amd64|arm64)$/\\1 &/p"
@@ -116,10 +116,13 @@ jobs:
         env:
           AB_GETH_VERSION: ${{ steps.release.outputs.ab_geth_version }}
           GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
+          AB_RETH_VERSION: ${{ steps.release.outputs.ab_reth_version }}
+          RETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-reth
           AB_LIGHTHOUSE_VERSION: ${{ steps.release.outputs.ab_lighthouse_version }}
           LIGHTHOUSE_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/ab-lighthouse
         run: |
           docker manifest inspect "${GETH_IMAGE}:${AB_GETH_VERSION}" >/dev/null
+          docker manifest inspect "${RETH_IMAGE}:${AB_RETH_VERSION}" >/dev/null
           docker manifest inspect "${LIGHTHOUSE_IMAGE_REPOSITORY}:${AB_LIGHTHOUSE_VERSION}" >/dev/null
 
       - name: Promote GitHub Release
@@ -139,6 +142,14 @@ jobs:
           GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
         run: |
           ./scripts/update-geth-latest.sh
+
+      - name: Point AB Reth latest to the promoted Release version
+        if: steps.release.outputs.promote == 'true'
+        env:
+          AB_RETH_VERSION: ${{ steps.release.outputs.ab_reth_version }}
+          RETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-reth
+        run: |
+          ./scripts/update-reth-latest.sh
 
       - name: Point AB Lighthouse latest to the promoted Release version
         if: steps.release.outputs.promote == 'true'

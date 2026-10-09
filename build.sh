@@ -121,10 +121,13 @@ function validate_client_versions() {
     jq -e '
         . as $lock
         | type == "object"
-        and (keys | sort) == (["geth", "prysm", "lighthouse", "deposit_cli"] | sort)
+        and (keys | sort) == (["geth", "reth", "prysm", "lighthouse", "deposit_cli"] | sort)
         and (.geth | keys | sort) == (["upstream_version", "ab_version"] | sort)
         and (.geth.upstream_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
         and (.geth.ab_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*$"))
+        and (.reth | keys | sort) == (["upstream_version", "ab_version"] | sort)
+        and (.reth.upstream_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+        and (.reth.ab_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*$"))
         and (.prysm | keys | sort) == (["version", "beacon_image", "validator_image"] | sort)
         and (.lighthouse | keys | sort) == (["version", "ab_version", "image"] | sort)
         and (.deposit_cli | keys | sort) == (["version", "image"] | sort)
@@ -152,6 +155,14 @@ function validate_client_versions() {
     if [[ -n "${AB_GETH_VERSION:-}" ]]; then
         [[ "$(jq -r '.geth.ab_version' "${client_versions_file}")" == "${AB_GETH_VERSION}" ]] \
             || fail "client version lock does not match AB_GETH_VERSION"
+    fi
+    if [[ -n "${RETH_VERSION:-}" ]]; then
+        [[ "$(jq -r '.reth.upstream_version' "${client_versions_file}")" == "${RETH_VERSION}" ]] \
+            || fail "client version lock does not match RETH_VERSION"
+    fi
+    if [[ -n "${AB_RETH_VERSION:-}" ]]; then
+        [[ "$(jq -r '.reth.ab_version' "${client_versions_file}")" == "${AB_RETH_VERSION}" ]] \
+            || fail "client version lock does not match AB_RETH_VERSION"
     fi
 }
 

@@ -1,0 +1,41 @@
+diff --git a/crates/chainspec/src/api.rs b/crates/chainspec/src/api.rs
+index 553935b99..a94284ff8 100644
+--- a/crates/chainspec/src/api.rs
++++ b/crates/chainspec/src/api.rs
+@@ -80,8 +80,21 @@ impl<H: BlockHeader> EthChainSpec for ChainSpec<H> {
+         self.base_fee_params_at_timestamp(timestamp)
+     }
+ 
++    fn next_block_base_fee(&self, parent: &Self::Header, target_timestamp: u64) -> Option<u64> {
++        const ABCORE_MIN_BASE_FEE: u64 = 50_000_000_000_000; // 50,000 Gwei
++
++        let next_base_fee =
++            parent.next_block_base_fee(self.base_fee_params_at_timestamp(target_timestamp))?;
++
++        Some(next_base_fee.max(ABCORE_MIN_BASE_FEE))
++    }
++
+     fn blob_params_at_timestamp(&self, timestamp: u64) -> Option<BlobParams> {
+-        if let Some(blob_param) = self.blob_params.active_scheduled_params_at_timestamp(timestamp) {
++        const ABCORE_MIN_BLOB_FEE: u128 = 50_000;
++
++        let mut params = if let Some(blob_param) =
++            self.blob_params.active_scheduled_params_at_timestamp(timestamp)
++        {
+             Some(*blob_param)
+         } else if self.is_osaka_active_at_timestamp(timestamp) {
+             Some(self.blob_params.osaka)
+@@ -91,7 +104,13 @@ impl<H: BlockHeader> EthChainSpec for ChainSpec<H> {
+             Some(self.blob_params.cancun)
+         } else {
+             None
++        };
++
++        if let Some(ref mut blob_params) = params {
++            blob_params.min_blob_fee = ABCORE_MIN_BLOB_FEE;
+         }
++
++        params
+     }
+ 
+     fn deposit_contract(&self) -> Option<&DepositContract> {

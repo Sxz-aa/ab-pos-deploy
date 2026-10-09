@@ -10,12 +10,15 @@ readonly default_chain_name="${ABPOS_CHAIN_NAME:-abcore}"
 readonly default_root_dir="${ABPOS_ROOT_DIR:-/data}"
 readonly github_api_url="${GITHUB_API_URL:-https://api.github.com}"
 readonly geth_image_override="${GETH_DOCKER_IMAGE:-}"
+readonly reth_image_override="${RETH_DOCKER_IMAGE:-}"
 readonly prysm_beacon_image_override="${PRYSM_BEACON_IMAGE:-}"
 readonly prysm_validator_image_override="${PRYSM_VALIDATOR_IMAGE:-}"
 readonly lighthouse_image_override="${LIGHTHOUSE_IMAGE:-}"
 readonly deposit_cli_image_override="${DEPOSIT_CLI_IMAGE:-}"
 readonly geth_binary_url_override="${AB_GETH_BINARY_URL:-}"
 readonly geth_binary_checksum_url_override="${AB_GETH_BINARY_SHA256_URL:-}"
+readonly reth_binary_url_override="${AB_RETH_BINARY_URL:-}"
+readonly reth_binary_checksum_url_override="${AB_RETH_BINARY_SHA256_URL:-}"
 readonly prysm_release_version_override="${PRYSM_RELEASE_VERSION:-}"
 readonly lighthouse_binary_url_override="${AB_LIGHTHOUSE_BINARY_URL:-}"
 readonly lighthouse_binary_checksum_url_override="${AB_LIGHTHOUSE_BINARY_SHA256_URL:-}"
@@ -37,7 +40,7 @@ function usage() {
 AB PoS node installer.
 
 Usage:
-  ab-pos.sh [chain] <network> [consensus-client] [geth] [options]
+  ab-pos.sh [chain] <network> [consensus-client] [geth|reth] [options]
   ab-pos.sh [chain] <network> --status
   ab-pos.sh [chain] <network> --logs [service]
   ab-pos.sh [chain] <network> --stop
@@ -48,7 +51,7 @@ Arguments:
   chain               Chain name; default: abcore
   network             testnet or mainnet
   consensus-client    prysm or lighthouse; detected for an installed node
-  execution-client    geth; optional because Geth is currently the only choice
+  execution-client    geth | reth; defaults to geth
 
 On an interactive installation, missing choices are requested from
 the terminal. Non-interactive installations must specify them explicitly.
@@ -57,7 +60,7 @@ Node modes:
   Default              RPC node, synchronized from checkpoint
   --validator          Validator node, synchronized from checkpoint
   --genesis            Synchronize from genesis instead of checkpoint
-  --archive            Run Geth in archive mode
+  --archive            Run the execution client in archive mode
 
 Validator behavior:
   --validator
@@ -101,7 +104,7 @@ Core options:
 
 Operations:
   --status                       Show services and synchronization state
-  --logs [geth|beacon|validator] Follow logs
+  --logs [execution|geth|reth|beacon|validator] Follow logs
   --stop                         Stop this node
   --restart                      Restart this node
   --import-keys                  Import keys and restart the Validator Client
@@ -480,11 +483,16 @@ geth_asset_name=""
 geth_asset_url=""
 geth_checksum_url=""
 resolved_geth_version=""
+reth_asset_name=""
+reth_asset_url=""
+reth_checksum_url=""
+resolved_reth_version=""
 lighthouse_asset_name=""
 lighthouse_asset_url=""
 lighthouse_checksum_url=""
 resolved_lighthouse_version=""
 geth_image=""
+reth_image=""
 platform_arch=""
 deployment_mode="docker"
 deployment_mode_selected=false
@@ -551,6 +559,10 @@ if [[ -n "${1:-}" && "${1:-}" != --* ]]; then
             execution_client="geth"
             shift
             ;;
+        reth)
+            execution_client="reth"
+            shift
+            ;;
         *) fail "Unsupported consensus client: $1" ;;
     esac
 fi
@@ -568,9 +580,6 @@ esac
 
 [[ "${chain_name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
     || fail "Invalid chain name: ${chain_name}"
-
-execution_client="${execution_client:-geth}"
-[[ "${execution_client}" == "geth" ]] || fail "Unsupported execution client: ${execution_client}"
 
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -676,6 +685,139 @@ if [[ "${extra_data_selected}" == true || "${graffiti_selected}" == true ]]; the
 fi
 [[ "${graffiti_selected}" == false || "${validator_mode}" == true ]] \
     || fail "--graffiti requires --validator."
+
+function detect_docker_execution_client() {
+    command -v docker >/dev/null 2>&1 || return 1
+
+    local container_id
+    local container_name
+    local label_client
+    local label_chain
+    local label_network
+    local label_role
+    local description
+    local mounts
+    local relevant
+    local -A detected=()
+
+    while IFS= read -r container_id; do
+        [[ -n "${container_id}" ]] || continue
+        container_name="$(docker container inspect "${container_id}" --format '{{.Name}}' 2>/dev/null)" || continue
+        container_name="${container_name#/}"
+        label_chain="$(docker container inspect "${container_id}" \
+            --format '{{index .Config.Labels "io.abpos.chain"}}' 2>/dev/null || true)"
+        label_network="$(docker container inspect "${container_id}" \
+            --format '{{index .Config.Labels "io.abpos.network"}}' 2>/dev/null || true)"
+        label_role="$(docker container inspect "${container_id}" \
+            --format '{{index .Config.Labels "io.abpos.role"}}' 2>/dev/null || true)"
+        label_client="$(docker container inspect "${container_id}" \
+            --format '{{index .Config.Labels "io.abpos.execution-client"}}' 2>/dev/null || true)"
+        mounts="$(docker container inspect "${container_id}" \
+            --format '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null || true)"
+
+        relevant=false
+        if [[ "${label_chain}:${label_network}:${label_role}" \
+            == "${chain_name}:${network}:execution" ]]; then
+            relevant=true
+        fi
+        case "${container_name}" in
+            "${chain_name}-${network}-execution")
+                relevant=true
+                ;;
+        esac
+        if grep -Fxq -- "${data_dir}/geth" <<<"${mounts}" \
+            || grep -Fxq -- "${data_dir}/reth" <<<"${mounts}"; then
+            relevant=true
+        fi
+
+        [[ "${relevant}" == true ]] || continue
+
+        case "${label_client}" in
+            geth | reth)
+                detected["${label_client}"]=1
+                continue
+                ;;
+        esac
+
+        description="$(docker container inspect "${container_id}" \
+            --format '{{.Config.Image}} {{.Path}} {{range .Args}}{{.}} {{end}}' 2>/dev/null || true)"
+
+        if [[ "${description,,}" == *geth* ]] \
+            || grep -Fxq -- "${data_dir}/geth" <<<"${mounts}"; then
+            detected[geth]=1
+        fi
+        if [[ "${description,,}" == *reth* ]] \
+            || grep -Fxq -- "${data_dir}/reth" <<<"${mounts}"; then
+            detected[reth]=1
+        fi
+    done < <(docker container ls -aq 2>/dev/null)
+
+    if (( ${#detected[@]} == 1 )); then
+        printf '%s\n' "${!detected[@]}"
+        return 0
+    fi
+    (( ${#detected[@]} == 0 )) && return 1
+    return 2
+}
+
+function detect_binary_execution_client() {
+    local -A detected=()
+
+    if [[ -f "${data_dir}/run/geth.sh" ]]; then
+        detected[geth]=1
+    fi
+    if [[ -f "${data_dir}/run/reth.sh" ]]; then
+        detected[reth]=1
+    fi
+
+    if (( ${#detected[@]} == 0 )); then
+        [[ -d "${data_dir}/geth" ]] && detected[geth]=1
+        [[ -d "${data_dir}/reth" ]] && detected[reth]=1
+    fi
+
+    if (( ${#detected[@]} == 1 )); then
+        printf '%s\n' "${!detected[@]}"
+        return 0
+    fi
+    (( ${#detected[@]} == 0 )) && return 1
+    return 2
+}
+
+function detect_installed_execution_client() {
+    if [[ "${deployment_mode}" == "binary" ]]; then
+        detect_binary_execution_client
+    else
+        detect_docker_execution_client
+    fi
+}
+
+if [[ -z "${execution_client}" ]]; then
+    detected_execution_client=""
+    detection_status=0
+    detected_execution_client="$(detect_installed_execution_client)" || detection_status=$?
+
+    case "${detection_status}" in
+        0)
+            execution_client="${detected_execution_client}"
+            color "34" "Detected installed execution client: ${execution_client}"
+            ;;
+        1)
+            if [[ "${operation}" == "install" ]]; then
+                execution_client="geth"
+            else
+                fail "Unable to detect the installed execution client. Specify geth or reth."
+            fi
+            ;;
+        *)
+            fail "Multiple installed execution clients were detected. Specify geth or reth."
+            ;;
+    esac
+fi
+
+case "${execution_client}" in
+    geth | reth) ;;
+    *) fail "Unsupported execution client: ${execution_client}" ;;
+esac
 
 function detect_docker_consensus_client() {
     command -v docker >/dev/null 2>&1 || return 1
@@ -823,11 +965,13 @@ keys_dir="${keys_dir:-${data_dir}/keys/validator_keys}"
 password_file="${password_file:-$(dirname "${keys_dir}")/pwd.txt}"
 share_dir="${data_dir}/share"
 geth_data_dir="${data_dir}/geth"
+reth_data_dir="${data_dir}/reth"
 beacon_data_dir="${data_dir}/${consensus_client:-consensus}"
 validator_data_dir="${data_dir}/${consensus_client:-consensus}-validator"
 mnemonic_file="${mnemonic_file:-$(dirname "${keys_dir}")/mnemonic.txt}"
 config_dir="${data_dir}/config"
 geth_config_dir="${config_dir}/execution/geth"
+reth_config_dir="${config_dir}/execution/reth"
 consensus_config_dir="${config_dir}/consensus"
 prysm_config_dir="${consensus_config_dir}/prysm"
 lighthouse_config_dir="${consensus_config_dir}/lighthouse"
@@ -841,8 +985,21 @@ log_dir="${data_dir}/logs"
 fee_recipient_file="${data_dir}/fee-recipient.txt"
 validator_password_reference_file="${data_dir}/validator-password-file.txt"
 
+case "${execution_client}" in
+    geth)
+        execution_service="geth"
+        execution_data_dir="${geth_data_dir}"
+        execution_config_dir="${geth_config_dir}"
+        ;;
+    reth)
+        execution_service="reth"
+        execution_data_dir="${reth_data_dir}"
+        execution_config_dir="${reth_config_dir}"
+        ;;
+esac
+
 container_prefix="${chain_name}-${network}"
-geth_container="${container_prefix}-execution"
+execution_container="${container_prefix}-execution"
 beacon_container="${container_prefix}-consensus"
 validator_container="${container_prefix}-validator"
 
@@ -968,7 +1125,7 @@ function resolve_archive_mode() {
     local setting_file="${config_dir}/archive-mode.txt"
     local container_name
     local arguments
-    local launcher="${run_dir}/geth.sh"
+    local launcher="${run_dir}/${execution_service}.sh"
 
     if [[ "${archive_mode}" == false ]]; then
         if [[ -e "${setting_file}" ]]; then
@@ -976,28 +1133,35 @@ function resolve_archive_mode() {
             [[ "${archive_mode}" == true || "${archive_mode}" == false ]] \
                 || fail "Invalid archive mode in ${setting_file}; expected true or false."
         fi
-        # Read the installed launch configuration as well, including stopped
-        # containers. Never execute a binary launcher to inspect its options.
-        if [[ "${archive_mode}" == false && "${deployment_mode}" == docker ]]; then
-            container_name="$(existing_role_container "${geth_container}" execution "${geth_data_dir}")"
-            if [[ -n "${container_name}" ]]; then
-                arguments="$(docker container inspect "${container_name}" --format '{{json .Config.Cmd}}')" \
-                    || fail "Unable to inspect the installed Geth archive mode."
-                archive_mode="$(jq -er '
-                    if type != "array" then error("expected Geth arguments") else
-                        . as $args | any(range(length); . as $i |
-                            $args[$i] == "--gcmode=archive" or
-                            ($args[$i] == "--gcmode" and $args[$i + 1] == "archive"))
-                    end | tostring
-                ' <<<"${arguments}")" \
-                    || fail "Unable to parse the installed Geth archive mode."
-            fi
-        elif [[ "${archive_mode}" == false && "${deployment_mode}" == binary && -f "${launcher}" ]]; then
-            if grep -Eq -- '(^|[[:space:]])--gcmode(=|[[:space:]]+)archive([[:space:]]|$)' "${launcher}"; then
-                archive_mode=true
+
+        # Geth exposes archive mode through its launch arguments, so legacy
+        # installations can recover the setting from the installed runtime.
+        # Reth currently uses the same runtime arguments for normal and Archive
+        # nodes, therefore its Archive intent is preserved by archive-mode.txt.
+        if [[ "${archive_mode}" == false && "${execution_client}" == geth ]]; then
+            if [[ "${deployment_mode}" == docker ]]; then
+                container_name="$(existing_role_container "${execution_container}" execution "${execution_data_dir}")"
+                if [[ -n "${container_name}" ]]; then
+                    arguments="$(docker container inspect "${container_name}" --format '{{json .Config.Cmd}}')" \
+                        || fail "Unable to inspect the installed Geth archive mode."
+                    archive_mode="$(jq -er '
+                        if type != "array" then error("expected Geth arguments") else
+                            . as $args | any(range(length); . as $i |
+                                $args[$i] == "--gcmode=archive" or
+                                ($args[$i] == "--gcmode" and $args[$i + 1] == "archive"))
+                        end | tostring
+                    ' <<<"${arguments}")" \
+                        || fail "Unable to parse the installed Geth archive mode."
+                fi
+            elif [[ "${deployment_mode}" == binary && -f "${launcher}" ]]; then
+                if grep -Eq -- '(^|[[:space:]])--gcmode(=|[[:space:]]+)archive([[:space:]]|$)' "${launcher}"; then
+                    archive_mode=true
+                fi
             fi
         fi
-        [[ "${archive_mode}" != true ]] || color "34" "Preserving the installed Geth archive mode."
+
+        [[ "${archive_mode}" != true ]] \
+            || color "34" "Preserving the installed archive mode."
     fi
 
     if [[ "${archive_mode}" == true ]]; then
@@ -1335,7 +1499,8 @@ function show_docker_status() {
     local consensus_name
     local validator_name
 
-    execution_name="$(existing_role_container "${geth_container}" execution "${geth_data_dir}")"
+    execution_name="$(existing_role_container "${execution_container}" execution \
+        "${execution_data_dir}")"
     consensus_name="$(existing_role_container "${beacon_container}" consensus \
         "${data_dir}/prysm" "${data_dir}/lighthouse")"
     validator_name="$(existing_role_container "${validator_container}" validator \
@@ -1353,12 +1518,13 @@ function show_docker_status() {
 }
 
 function operate_existing_docker_node() {
-    local runtime_geth_container
+    local runtime_execution_container
     local runtime_beacon_container
     local runtime_validator_container
     local -a runtime_containers=()
 
-    runtime_geth_container="$(existing_role_container "${geth_container}" execution "${geth_data_dir}")"
+    runtime_execution_container="$(existing_role_container "${execution_container}" execution \
+        "${execution_data_dir}")"
     runtime_beacon_container="$(existing_role_container "${beacon_container}" consensus \
         "${data_dir}/prysm" "${data_dir}/lighthouse")"
     runtime_validator_container="$(existing_role_container "${validator_container}" validator \
@@ -1369,20 +1535,20 @@ function operate_existing_docker_node() {
         stop)
             [[ -z "${runtime_validator_container}" ]] || runtime_containers+=("${runtime_validator_container}")
             [[ -z "${runtime_beacon_container}" ]] || runtime_containers+=("${runtime_beacon_container}")
-            [[ -z "${runtime_geth_container}" ]] || runtime_containers+=("${runtime_geth_container}")
+            [[ -z "${runtime_execution_container}" ]] || runtime_containers+=("${runtime_execution_container}")
             [[ "${#runtime_containers[@]}" -eq 0 ]] || docker stop "${runtime_containers[@]}"
             ;;
         restart)
-            [[ -z "${runtime_geth_container}" ]] || runtime_containers+=("${runtime_geth_container}")
+            [[ -z "${runtime_execution_container}" ]] || runtime_containers+=("${runtime_execution_container}")
             [[ -z "${runtime_beacon_container}" ]] || runtime_containers+=("${runtime_beacon_container}")
             [[ -z "${runtime_validator_container}" ]] || runtime_containers+=("${runtime_validator_container}")
             [[ "${#runtime_containers[@]}" -eq 0 ]] || docker restart "${runtime_containers[@]}"
             ;;
         logs)
             case "${log_service:-beacon}" in
-                geth)
-                    [[ -n "${runtime_geth_container}" ]] || fail "Execution container was not found."
-                    docker logs -f --tail 200 "${runtime_geth_container}"
+                geth | reth | execution)
+                    [[ -n "${runtime_execution_container}" ]] || fail "Execution container was not found."
+                    docker logs -f --tail 200 "${runtime_execution_container}"
                     ;;
                 beacon | prysm | lighthouse)
                     [[ -n "${runtime_beacon_container}" ]] || fail "Consensus container was not found."
@@ -1442,9 +1608,9 @@ function show_binary_status() {
     local pid
 
     printf '%-12s %-8s %s\n' SERVICE PID STATUS
-    for service in geth beacon validator; do
+    for service in "${execution_service}" beacon validator; do
         case "${service}" in
-            geth) service_label="Execution" ;;
+            geth | reth) service_label="Execution" ;;
             beacon) service_label="Consensus" ;;
             validator) service_label="Validator" ;;
         esac
@@ -1515,15 +1681,15 @@ function operate_existing_binary_node() {
     case "${operation}" in
         status) show_binary_status ;;
         stop)
-            for service in validator beacon geth; do
+            for service in validator beacon "${execution_service}"; do
                 stop_binary_service "${service}"
             done
             ;;
         restart)
-            for service in validator beacon geth; do
+            for service in validator beacon "${execution_service}"; do
                 stop_binary_service "${service}"
             done
-            for service in geth beacon validator; do
+            for service in "${execution_service}" beacon validator; do
                 [[ -x "$(binary_launcher_file "${service}")" ]] || continue
                 start_binary_service "${service}"
             done
@@ -1531,7 +1697,7 @@ function operate_existing_binary_node() {
             ;;
         logs)
             case "${log_service:-beacon}" in
-                geth) service="geth" ;;
+                geth | reth | execution) service="${execution_service}" ;;
                 beacon | prysm | lighthouse) service="beacon" ;;
                 validator) service="validator" ;;
                 *) fail "Unknown log service: ${log_service}" ;;
@@ -1856,6 +2022,8 @@ function resolve_release() {
     local network_asset_count
     local geth_asset_count
     local geth_checksum_count
+    local reth_asset_count
+    local reth_checksum_count
     case "$(uname -m)" in
         x86_64 | amd64) platform_arch="amd64" ;;
         aarch64 | arm64) platform_arch="arm64" ;;
@@ -1865,14 +2033,34 @@ function resolve_release() {
     if [[ -n "${release_url}" ]]; then
         network_release_url="${release_url}"
         if [[ "${deployment_mode}" == "docker" ]]; then
-            [[ -n "${geth_image_override}" ]] \
-                || fail "--release-url requires GETH_DOCKER_IMAGE with an explicit version tag in Docker mode."
-            geth_image="${geth_image_override}"
+            case "${execution_client}" in
+                geth)
+                    [[ -n "${geth_image_override}" ]] \
+                        || fail "--release-url with Geth requires GETH_DOCKER_IMAGE with an explicit version tag in Docker mode."
+                    geth_image="${geth_image_override}"
+                    ;;
+                reth)
+                    [[ -n "${reth_image_override}" ]] \
+                        || fail "--release-url with Reth requires RETH_DOCKER_IMAGE with an explicit version tag in Docker mode."
+                    reth_image="${reth_image_override}"
+                    ;;
+            esac
         else
-            [[ -n "${geth_binary_url_override}" && -n "${geth_binary_checksum_url_override}" ]] \
-                || fail "--release-url requires AB_GETH_BINARY_URL and AB_GETH_BINARY_SHA256_URL in binary mode."
-            geth_asset_url="${geth_binary_url_override}"
-            geth_checksum_url="${geth_binary_checksum_url_override}"
+            case "${execution_client}" in
+                geth)
+                    [[ -n "${geth_binary_url_override}" && -n "${geth_binary_checksum_url_override}" ]] \
+                        || fail "--release-url with Geth requires AB_GETH_BINARY_URL and AB_GETH_BINARY_SHA256_URL in binary mode."
+                    geth_asset_url="${geth_binary_url_override}"
+                    geth_checksum_url="${geth_binary_checksum_url_override}"
+                    ;;
+                reth)
+                    [[ -n "${reth_binary_url_override}" && -n "${reth_binary_checksum_url_override}" ]] \
+                        || fail "--release-url with Reth requires AB_RETH_BINARY_URL and AB_RETH_BINARY_SHA256_URL in binary mode."
+                    reth_asset_url="${reth_binary_url_override}"
+                    reth_checksum_url="${reth_binary_checksum_url_override}"
+                    ;;
+            esac
+
             if [[ "${consensus_client}" == lighthouse ]]; then
                 [[ -n "${lighthouse_binary_url_override}" && -n "${lighthouse_binary_checksum_url_override}" ]] \
                     || fail "--release-url with Lighthouse in binary mode requires AB_LIGHTHOUSE_BINARY_URL and AB_LIGHTHOUSE_BINARY_SHA256_URL."
@@ -1902,38 +2090,76 @@ function resolve_release() {
         ' <<<"${release_json}"
     )"
 
-    geth_asset_count="$(
-        jq -r --arg arch "${platform_arch}" '
-            [.assets[] | select(.name | test("^ab-geth-v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*-linux-" + $arch + "$"))] | length
-        ' <<<"${release_json}"
-    )"
-    [[ "${geth_asset_count}" -eq 1 ]] \
-        || fail "The selected Release must contain exactly one AB Geth linux-${platform_arch} binary; found ${geth_asset_count}."
+    case "${execution_client}" in
+        geth)
+            geth_asset_count="$(
+                jq -r --arg arch "${platform_arch}" '
+                    [.assets[] | select(.name | test("^ab-geth-v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*-linux-" + $arch + "$"))] | length
+                ' <<<"${release_json}"
+            )"
+            [[ "${geth_asset_count}" -eq 1 ]] \
+                || fail "The selected Release must contain exactly one AB Geth linux-${platform_arch} binary; found ${geth_asset_count}."
 
-    geth_asset_name="$(
-        jq -r --arg arch "${platform_arch}" '
-            [.assets[] | select(.name | test("^ab-geth-v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*-linux-" + $arch + "$"))][0].name
-        ' <<<"${release_json}"
-    )"
-    geth_checksum_count="$(
-        jq -r --arg name "${geth_asset_name}.sha256" '
-            [.assets[] | select(.name == $name)] | length
-        ' <<<"${release_json}"
-    )"
-    [[ "${geth_checksum_count}" -eq 1 ]] \
-        || fail "The selected Release must contain ${geth_asset_name}.sha256."
-    geth_asset_url="$(
-        jq -r --arg name "${geth_asset_name}" \
-            '[.assets[] | select(.name == $name)][0].browser_download_url' <<<"${release_json}"
-    )"
-    geth_checksum_url="$(
-        jq -r --arg name "${geth_asset_name}.sha256" \
-            '[.assets[] | select(.name == $name)][0].browser_download_url' <<<"${release_json}"
-    )"
-    resolved_geth_version="${geth_asset_name#ab-geth-}"
-    resolved_geth_version="${resolved_geth_version%-linux-${platform_arch}}"
-    [[ "${resolved_geth_version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-ab\.[1-9][0-9]*$ ]] \
-        || fail "Unable to parse the AB Geth version from ${geth_asset_name}."
+            geth_asset_name="$(
+                jq -r --arg arch "${platform_arch}" '
+                    [.assets[] | select(.name | test("^ab-geth-v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*-linux-" + $arch + "$"))][0].name
+                ' <<<"${release_json}"
+            )"
+            geth_checksum_count="$(
+                jq -r --arg name "${geth_asset_name}.sha256" '
+                    [.assets[] | select(.name == $name)] | length
+                ' <<<"${release_json}"
+            )"
+            [[ "${geth_checksum_count}" -eq 1 ]] \
+                || fail "The selected Release must contain ${geth_asset_name}.sha256."
+            geth_asset_url="$(
+                jq -r --arg name "${geth_asset_name}" \
+                    '[.assets[] | select(.name == $name)][0].browser_download_url' <<<"${release_json}"
+            )"
+            geth_checksum_url="$(
+                jq -r --arg name "${geth_asset_name}.sha256" \
+                    '[.assets[] | select(.name == $name)][0].browser_download_url' <<<"${release_json}"
+            )"
+            resolved_geth_version="${geth_asset_name#ab-geth-}"
+            resolved_geth_version="${resolved_geth_version%-linux-${platform_arch}}"
+            [[ "${resolved_geth_version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-ab\.[1-9][0-9]*$ ]] \
+                || fail "Unable to parse the AB Geth version from ${geth_asset_name}."
+            ;;
+        reth)
+            reth_asset_count="$(
+                jq -r --arg arch "${platform_arch}" '
+                    [.assets[] | select(.name | test("^ab-reth-v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*-linux-" + $arch + "$"))] | length
+                ' <<<"${release_json}"
+            )"
+            [[ "${reth_asset_count}" -eq 1 ]] \
+                || fail "The selected Release must contain exactly one AB Reth linux-${platform_arch} binary; found ${reth_asset_count}."
+
+            reth_asset_name="$(
+                jq -r --arg arch "${platform_arch}" '
+                    [.assets[] | select(.name | test("^ab-reth-v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*-linux-" + $arch + "$"))][0].name
+                ' <<<"${release_json}"
+            )"
+            reth_checksum_count="$(
+                jq -r --arg name "${reth_asset_name}.sha256" '
+                    [.assets[] | select(.name == $name)] | length
+                ' <<<"${release_json}"
+            )"
+            [[ "${reth_checksum_count}" -eq 1 ]] \
+                || fail "The selected Release must contain ${reth_asset_name}.sha256."
+            reth_asset_url="$(
+                jq -r --arg name "${reth_asset_name}" \
+                    '[.assets[] | select(.name == $name)][0].browser_download_url' <<<"${release_json}"
+            )"
+            reth_checksum_url="$(
+                jq -r --arg name "${reth_asset_name}.sha256" \
+                    '[.assets[] | select(.name == $name)][0].browser_download_url' <<<"${release_json}"
+            )"
+            resolved_reth_version="${reth_asset_name#ab-reth-}"
+            resolved_reth_version="${resolved_reth_version%-linux-${platform_arch}}"
+            [[ "${resolved_reth_version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-ab\.[1-9][0-9]*$ ]] \
+                || fail "Unable to parse the AB Reth version from ${reth_asset_name}."
+            ;;
+    esac
 
     if [[ "${consensus_client}" == lighthouse ]]; then
         local lighthouse_asset_count
@@ -1955,7 +2181,14 @@ function resolve_release() {
 
     if [[ "${deployment_mode}" == "docker" ]]; then
         release_owner="${release_repo%%/*}"
-        geth_image="${geth_image_override:-ghcr.io/${release_owner,,}/ab-geth:${resolved_geth_version}}"
+        case "${execution_client}" in
+            geth)
+                geth_image="${geth_image_override:-ghcr.io/${release_owner,,}/ab-geth:${resolved_geth_version}}"
+                ;;
+            reth)
+                reth_image="${reth_image_override:-ghcr.io/${release_owner,,}/ab-reth:${resolved_reth_version}}"
+                ;;
+        esac
     fi
 }
 
@@ -2224,6 +2457,7 @@ function prepare_key_generation_settings() {
 function load_client_versions() {
     local versions_file="${share_dir}/client-versions.json"
     local locked_geth_version
+    local locked_reth_version
 
     if [[ ! -s "${versions_file}" && "${key_generation_only}" == true \
         && -n "${deposit_settings_file}" ]]; then
@@ -2245,10 +2479,13 @@ function load_client_versions() {
     jq -e '
         . as $lock
         | type == "object"
-        and (keys | sort) == (["geth", "prysm", "lighthouse", "deposit_cli"] | sort)
+        and (keys | sort) == (["geth", "reth", "prysm", "lighthouse", "deposit_cli"] | sort)
         and (.geth | keys | sort) == (["upstream_version", "ab_version"] | sort)
         and (.geth.upstream_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
         and (.geth.ab_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*$"))
+        and (.reth | keys | sort) == (["upstream_version", "ab_version"] | sort)
+        and (.reth.upstream_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+        and (.reth.ab_version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-ab\\.[1-9][0-9]*$"))
         and (.prysm | keys | sort) == (["version", "beacon_image", "validator_image"] | sort)
         and (.lighthouse | keys | sort) == (["version", "ab_version", "image"] | sort)
         and (.deposit_cli | keys | sort) == (["version", "image"] | sort)
@@ -2289,8 +2526,13 @@ function load_client_versions() {
     fi
 
     locked_geth_version="$(jq -r '.geth.ab_version' "${versions_file}")"
+    locked_reth_version="$(jq -r '.reth.ab_version' "${versions_file}")"
+
     if [[ -n "${resolved_geth_version}" && "${resolved_geth_version}" != "${locked_geth_version}" ]]; then
         fail "Network Release AB Geth asset ${resolved_geth_version} does not match client-versions.json ${locked_geth_version}."
+    fi
+    if [[ -n "${resolved_reth_version}" && "${resolved_reth_version}" != "${locked_reth_version}" ]]; then
+        fail "Network Release AB Reth asset ${resolved_reth_version} does not match client-versions.json ${locked_reth_version}."
     fi
     if [[ -n "${resolved_lighthouse_version}" && "${resolved_lighthouse_version}" != "${ab_lighthouse_version}" ]]; then
         fail "Network Release AB Lighthouse asset ${resolved_lighthouse_version} does not match client-versions.json ${ab_lighthouse_version}."
@@ -2845,6 +3087,16 @@ function install_ab_geth_binary() {
     download_verified_binary "${asset_name}" "${geth_asset_url}" "${geth_checksum_url}" "${bin_dir}/geth"
 }
 
+function install_ab_reth_binary() {
+    local asset_name="${reth_asset_name}"
+
+    [[ -n "${asset_name}" ]] || asset_name="$(basename "${reth_asset_url%%\?*}")"
+    [[ -n "${asset_name}" && -n "${reth_asset_url}" && -n "${reth_checksum_url}" ]] \
+        || fail "The selected Network Release does not provide a verifiable AB Reth binary."
+    color "34" "Installing AB Reth binary: ${asset_name}"
+    download_verified_binary "${asset_name}" "${reth_asset_url}" "${reth_checksum_url}" "${bin_dir}/reth"
+}
+
 function install_prysm_binaries() {
     local release_json
     local release_tag
@@ -3007,66 +3259,118 @@ function deploy_binary_node() {
     local service
     local lighthouse_bootnodes
     local -a geth_binary_args
+    local -a reth_binary_args
     local -a beacon_binary_args
     local -a validator_binary_args
     local -a binary_bootstrap_args
 
-    install_ab_geth_binary
+    case "${execution_client}" in
+        geth)
+            install_ab_geth_binary
+            ;;
+        reth)
+            install_ab_reth_binary
+            ;;
+    esac
+
     if [[ "${consensus_client}" == "prysm" ]]; then
         install_prysm_binaries
     else
         install_lighthouse_binary
     fi
 
-    for service in validator beacon geth; do
+    for service in validator beacon geth reth; do
         stop_binary_service "${service}"
     done
 
-    prepare_geth_nodekey
+    if [[ "${execution_client}" == "geth" ]]; then
+        prepare_geth_nodekey
+    fi
     if [[ "${consensus_client}" == "prysm" ]]; then
         prepare_prysm_p2p_key
     else
         prepare_lighthouse_network_identity
     fi
 
-    if [[ ! -d "${geth_data_dir}/geth/chaindata" ]]; then
-        color "34" "Initializing Geth from genesis.json."
-        "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
-    elif geth_binary_chain_config_matches_release; then
-        color "32" "Geth chain configuration is unchanged; skipping init."
-    else
-        color "34" "Updating Geth chain configuration from genesis.json."
-        "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
-    fi
-    record_initialized_genesis
-    persist_generated_geth_nodekey
+    case "${execution_client}" in
+        geth)
+            if [[ ! -d "${geth_data_dir}/geth/chaindata" ]]; then
+                color "34" "Initializing Geth from genesis.json."
+                "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
+            elif geth_binary_chain_config_matches_release; then
+                color "32" "Geth chain configuration is unchanged; skipping init."
+            else
+                color "34" "Updating Geth chain configuration from genesis.json."
+                "${bin_dir}/geth" "--datadir=${geth_data_dir}" init "${share_dir}/genesis.json"
+            fi
+            record_initialized_genesis
+            persist_generated_geth_nodekey
 
-    geth_binary_args=(
-        "--datadir=${geth_data_dir}"
-        "--nodekey=${geth_nodekey_file}"
-        "--networkid=${network_id}"
-        --port=30303
-        --http
-        --http.addr=127.0.0.1
-        --http.port=8545
-        --http.api=eth,net,web3,admin
-        --rpc.txfeecap=1000
-        --authrpc.addr=127.0.0.1
-        --authrpc.port=8551
-        --authrpc.vhosts=\*
-        "--authrpc.jwtsecret=${jwt_secret_file}"
-        --syncmode=full
-        "${geth_metadata_args[@]}"
-    )
-    if [[ "${archive_mode}" == true ]]; then
-        geth_binary_args+=(
-            --gcmode=archive
-            --history.state=0
-        )
-    fi
-    [[ -n "${bootnodes}" ]] && geth_binary_args+=("--bootnodes=${bootnodes}")
-    [[ -z "${node_public_ip}" ]] || geth_binary_args+=("--nat=extip:${node_public_ip}")
-    write_binary_launcher geth "${bin_dir}/geth" "${geth_binary_args[@]}"
+            geth_binary_args=(
+                "--datadir=${geth_data_dir}"
+                "--nodekey=${geth_nodekey_file}"
+                "--networkid=${network_id}"
+                --port=30303
+                --http
+                --http.addr=127.0.0.1
+                --http.port=8545
+                --http.api=eth,net,web3,admin
+                --rpc.txfeecap=1000
+                --authrpc.addr=127.0.0.1
+                --authrpc.port=8551
+                --authrpc.vhosts=\*
+                "--authrpc.jwtsecret=${jwt_secret_file}"
+                --syncmode=full
+                "${geth_metadata_args[@]}"
+            )
+            if [[ "${archive_mode}" == true ]]; then
+                geth_binary_args+=(
+                    --gcmode=archive
+                    --history.state=0
+                )
+            fi
+            [[ -n "${bootnodes}" ]] && geth_binary_args+=("--bootnodes=${bootnodes}")
+            [[ -z "${node_public_ip}" ]] || geth_binary_args+=("--nat=extip:${node_public_ip}")
+            write_binary_launcher geth "${bin_dir}/geth" "${geth_binary_args[@]}"
+            ;;
+
+        reth)
+            if [[ ! -d "${reth_data_dir}/db" ]]; then
+                color "34" "Initializing Reth from genesis.json."
+                "${bin_dir}/reth" init \
+                    "--datadir=${reth_data_dir}" \
+                    --chain "${share_dir}/genesis.json"
+            else
+                color "32" "Reth data directory already exists; skipping init."
+            fi
+
+            reth_binary_args=(
+                -vvv
+                node
+                "--datadir=${reth_data_dir}"
+                --chain "${share_dir}/genesis.json"
+                --http
+                --http.addr 127.0.0.1
+                --http.port 8545
+                --http.api eth,net,web3,debug,admin
+                --rpc.txfeecap 1000
+                --rpc.force-blob-sidecar-upcasting
+                --ws
+                --ws.addr 127.0.0.1
+                --ws.port 8546
+                --ws.api eth,net,web3,debug,admin
+                --authrpc.addr 127.0.0.1
+                --authrpc.port 8551
+                --authrpc.jwtsecret "${jwt_secret_file}"
+                --port 30303
+                --discovery.port 30303
+                --discovery.v5.port 30303
+            )
+            [[ -n "${bootnodes}" ]] && reth_binary_args+=(--bootnodes "${bootnodes}")
+            [[ -z "${node_public_ip}" ]] || reth_binary_args+=(--nat "extip:${node_public_ip}")
+            write_binary_launcher reth "${bin_dir}/reth" "${reth_binary_args[@]}"
+            ;;
+    esac
 
     mapfile -t binary_bootstrap_args < <(
         if [[ -f "${share_dir}/bootstrap_nodes.txt" ]]; then
@@ -3158,7 +3462,7 @@ function deploy_binary_node() {
         fi
     fi
 
-    start_binary_service geth
+    start_binary_service "${execution_service}"
     start_binary_service beacon
     if [[ "${consensus_client}" == "prysm" ]]; then
         persist_generated_prysm_p2p_key
@@ -3176,7 +3480,7 @@ if [[ "${deployment_mode}" == "binary" ]]; then
     color "37" "Chain: ${chain_name}"
     color "37" "Network: ${network}"
     color "37" "Consensus client: ${consensus_client}"
-    color "37" "Execution client: geth"
+    color "37" "Execution client: ${execution_client}"
     color "37" "Deployment: native binaries"
     color "37" "Binary directory: ${bin_dir}"
     color "37" "Data directory: ${data_dir}"
@@ -3260,7 +3564,7 @@ fi
 [[ -z "${node_public_ip}" ]] || geth_args+=("--nat=extip:${node_public_ip}")
 
 docker run -d \
-    --name "${geth_container}" \
+    --name "${execution_container}" \
     --label "io.abpos.chain=${chain_name}" \
     --label "io.abpos.network=${network}" \
     --label "io.abpos.role=execution" \
@@ -3454,7 +3758,7 @@ color "32" "AB PoS node installation completed."
 color "37" "Chain: ${chain_name}"
 color "37" "Network: ${network}"
 color "37" "Consensus client: ${consensus_client}"
-color "37" "Execution client: geth"
+color "37" "Execution client: ${execution_client}"
 color "37" "Execution image: ${geth_image}"
 color "37" "Data directory: ${data_dir}"
 color "37" "Synchronization source: $([[ "${genesis_mode}" == true ]] && echo genesis || echo checkpoint)"
