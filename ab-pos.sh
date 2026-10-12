@@ -1028,21 +1028,19 @@ function containers_for_role() {
     while IFS= read -r container_id; do
         [[ -n "${container_id}" ]] || continue
         matched=false
-        if [[ "$(docker container inspect "${container_id}" \
-            --format '{{index .Config.Labels "io.abpos.chain"}}:{{index .Config.Labels "io.abpos.network"}}:{{index .Config.Labels "io.abpos.role"}}' 2>/dev/null)" \
-            == "${chain_name}:${network}:${role}" ]]; then
-            matched=true
-        else
-            for host_path in "$@"; do
-                if container_mounts_host_path "${container_id}" "${host_path}"; then
-                    matched=true
-                    break
-                fi
-            done
-        fi
+
+        for host_path in "$@"; do
+            if container_mounts_host_path "${container_id}" "${host_path}"; then
+                matched=true
+                break
+            fi
+        done
+
         [[ "${matched}" == true ]] || continue
+
         container_name="$(docker container inspect "${container_id}" --format '{{.Name}}' 2>/dev/null)"
         container_name="${container_name#/}"
+
         if [[ -n "${container_name}" && -z "${emitted[${container_name}]:-}" ]]; then
             printf '%s\n' "${container_name}"
             emitted["${container_name}"]=1
@@ -1053,19 +1051,104 @@ function containers_for_role() {
 function replace_role_containers() {
     local role="$1"
     shift
+
+    local preferred_name
     local container_name
+    local host_path
+    local matched=false
     local stop_timeout=30
+    local -a matched_containers=()
 
     [[ "${role}" != execution ]] || stop_timeout=120
 
-    while IFS= read -r container_name; do
-        [[ -n "${container_name}" ]] || continue
-        color "34" "Replacing ${role} container ${container_name}."
-        if [[ "$(docker container inspect "${container_name}" --format '{{.State.Running}}')" == true ]]; then
-            docker stop --time "${stop_timeout}" "${container_name}" >/dev/null
+    case "${role}" in
+        execution) preferred_name="${execution_container}" ;;
+        consensus) preferred_name="${beacon_container}" ;;
+        validator) preferred_name="${validator_container}" ;;
+        *) fail "Unknown container role: ${role}" ;;
+    esac
+
+    mapfile -t matched_containers < <(
+        containers_for_role "${role}" "$@"
+    )
+
+    for container_name in "${matched_containers[@]}"; do
+        if [[ "${container_name}" != "${preferred_name}" ]]; then
+            fail "Container ${container_name} shares the ${role} data directory; refusing to remove an unexpected container."
         fi
-        docker rm "${container_name}" >/dev/null
-    done < <(containers_for_role "${role}" "$@")
+    done
+
+    container_exists "${preferred_name}" || return 0
+
+    matched=false
+    for host_path in "$@"; do
+        if container_mounts_host_path "${preferred_name}" "${host_path}"; then
+            matched=true
+            break
+        fi
+    done
+
+    [[ "${matched}" == true ]] ||
+        fail "Container ${preferred_name} belongs to another data directory; refusing to replace it."
+
+    color "34" "Replacing ${role} container ${preferred_name}."
+
+    if [[ "$(docker container inspect "${preferred_name}" --format '{{.State.Running}}')" == true ]]; then
+        docker stop --time "${stop_timeout}" "${preferred_name}" >/dev/null
+    fi
+
+    docker rm "${preferred_name}" >/dev/null
+}
+
+function preflight_docker_container_conflicts() {
+    local role
+    local preferred_name
+    local container_name
+    local host_path
+    local matched
+    local -a paths=()
+    local -a matched_containers=()
+
+    for role in execution consensus validator; do
+        case "${role}" in
+            execution)
+                preferred_name="${execution_container}"
+                paths=("${geth_data_dir}" "${reth_data_dir}")
+                ;;
+            consensus)
+                preferred_name="${beacon_container}"
+                paths=("${data_dir}/prysm" "${data_dir}/lighthouse")
+                ;;
+            validator)
+                [[ "${validator_mode}" == true ]] || continue
+                preferred_name="${validator_container}"
+                paths=("${data_dir}/prysm-validator" "${data_dir}/lighthouse-validator")
+                ;;
+        esac
+
+        mapfile -t matched_containers < <(
+            containers_for_role "${role}" "${paths[@]}"
+        )
+
+        for container_name in "${matched_containers[@]}"; do
+            if [[ "${container_name}" != "${preferred_name}" ]]; then
+                fail "Docker preflight: ${container_name} shares the ${role} data directory; refusing deployment."
+            fi
+        done
+
+        container_exists "${preferred_name}" || continue
+
+        matched=false
+        for host_path in "${paths[@]}"; do
+            if container_mounts_host_path "${preferred_name}" "${host_path}"; then
+                matched=true
+                break
+            fi
+        done
+
+        [[ "${matched}" == true ]] ||
+            fail "Docker preflight: ${preferred_name} belongs to another data directory; refusing deployment."
+    done
 }
 
 function existing_role_container() {
@@ -1885,7 +1968,7 @@ if [[ "${deployment_mode}" == "binary" ]]; then
     mkdir -p "${bin_dir}"
 fi
 if [[ "${key_generation_only}" == false ]]; then
-    mkdir -p "${geth_data_dir}" "${beacon_data_dir}" "${geth_config_dir}"
+    mkdir -p "${geth_data_dir}" "${reth_data_dir}" "${beacon_data_dir}" "${geth_config_dir}"
     if [[ "${deployment_mode}" == "binary" ]]; then
         mkdir -p "${run_dir}" "${log_dir}"
     fi
@@ -3224,13 +3307,14 @@ function initialized_genesis_matches_release() {
 }
 
 function record_initialized_genesis() {
+    local target_data_dir="${1:-${geth_data_dir}}"
     local checksum
     local checksum_file
 
     checksum="$(sha256sum "${share_dir}/genesis.json")"
-    checksum_file="$(mktemp "${geth_data_dir}/.initialized-genesis.XXXXXX")"
+    checksum_file="$(mktemp "${target_data_dir}/.initialized-genesis.XXXXXX")"
     printf '%s\n' "${checksum%% *}" > "${checksum_file}"
-    mv -f -- "${checksum_file}" "${geth_data_dir}/.initialized-genesis.sha256"
+    mv -f -- "${checksum_file}" "${target_data_dir}/.initialized-genesis.sha256"
 }
 
 function geth_binary_chain_config_matches_release() {
@@ -3490,6 +3574,8 @@ if [[ "${deployment_mode}" == "binary" ]]; then
     exit 0
 fi
 
+preflight_docker_container_conflicts
+
 function geth_chain_config_matches_release() {
     local stored_genesis
     local dump_log
@@ -3514,7 +3600,8 @@ function geth_chain_config_matches_release() {
     initialized_genesis_matches_release
 }
 
-replace_role_containers execution "${geth_data_dir}"
+if [[ "${execution_client}" == "geth" ]]; then
+replace_role_containers execution "${geth_data_dir}" "${reth_data_dir}"
 prepare_geth_nodekey
 if [[ ! -d "${geth_data_dir}/geth/chaindata" ]]; then
     color "34" "Initializing Geth from genesis.json."
@@ -3575,6 +3662,73 @@ docker run -d \
     -v "${share_dir}:/share:ro" \
     -v "${jwt_secret_file}:/jwtsecret:ro" \
     "${geth_image}" "${geth_args[@]}" >/dev/null
+
+else
+    replace_role_containers execution "${geth_data_dir}" "${reth_data_dir}"
+
+    if [[ ! -d "${reth_data_dir}/db" ]]; then
+        color "34" "Initializing Reth from genesis.json."
+        docker run --rm \
+            -v "${reth_data_dir}:/data" \
+            -v "${share_dir}:/share:ro" \
+            "${reth_image}" \
+            init --datadir=/data --chain=/share/genesis.json
+
+        record_initialized_genesis "${reth_data_dir}"
+    else
+        reth_recorded_genesis="${reth_data_dir}/.initialized-genesis.sha256"
+
+        [[ -f "${reth_recorded_genesis}" ]] ||
+            fail "Existing Reth database has no Genesis record; refusing to continue."
+
+        reth_expected_checksum="$(sha256sum "${share_dir}/genesis.json")"
+        reth_expected_checksum="${reth_expected_checksum%% *}"
+        reth_actual_checksum="$(< "${reth_recorded_genesis}")"
+
+        [[ "${reth_actual_checksum}" == "${reth_expected_checksum}" ]] ||
+            fail "Existing Reth database Genesis differs from Release."
+
+        color "32" "Reth Genesis is unchanged; skipping init."
+    fi
+
+    reth_args=(
+        -vvv node
+        --datadir=/data
+        --chain=/share/genesis.json
+        --http
+        --http.addr=127.0.0.1
+        --http.port=8545
+        --http.api=eth,net,web3,debug,admin
+        --rpc.txfeecap=1000
+        --rpc.force-blob-sidecar-upcasting
+        --ws
+        --ws.addr=127.0.0.1
+        --ws.port=8546
+        --ws.api=eth,net,web3,debug,admin
+        --authrpc.addr=127.0.0.1
+        --authrpc.port=8551
+        --authrpc.jwtsecret=/jwtsecret
+        --port=30303
+        --discovery.port=30303
+        --discovery.v5.port=30303
+    )
+
+    [[ -n "${bootnodes}" ]] && reth_args+=(--bootnodes "${bootnodes}")
+    [[ -z "${node_public_ip}" ]] || reth_args+=(--nat "extip:${node_public_ip}")
+
+    docker run -d \
+        --name "${execution_container}" \
+        --label "io.abpos.chain=${chain_name}" \
+        --label "io.abpos.network=${network}" \
+        --label "io.abpos.role=execution" \
+        --label "io.abpos.execution-client=${execution_client}" \
+        --restart unless-stopped \
+        --network host \
+        -v "${reth_data_dir}:/data" \
+        -v "${share_dir}:/share:ro" \
+        -v "${jwt_secret_file}:/jwtsecret:ro" \
+        "${reth_image}" "${reth_args[@]}" >/dev/null
+fi
 
 mapfile -t bootstrap_args < <(
     if [[ -f "${share_dir}/bootstrap_nodes.txt" ]]; then
@@ -3759,7 +3913,7 @@ color "37" "Chain: ${chain_name}"
 color "37" "Network: ${network}"
 color "37" "Consensus client: ${consensus_client}"
 color "37" "Execution client: ${execution_client}"
-color "37" "Execution image: ${geth_image}"
+color "37" "Execution image: $([[ "${execution_client}" == "geth" ]] && echo "${geth_image}" || echo "${reth_image}")"
 color "37" "Data directory: ${data_dir}"
 color "37" "Synchronization source: $([[ "${genesis_mode}" == true ]] && echo genesis || echo checkpoint)"
 show_docker_status true

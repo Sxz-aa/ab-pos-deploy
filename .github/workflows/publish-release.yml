@@ -115,11 +115,11 @@ jobs:
         if: steps.release.outputs.promote == 'true'
         env:
           AB_GETH_VERSION: ${{ steps.release.outputs.ab_geth_version }}
-          GETH_IMAGE: ghcr.io/sxz-aa/ab-geth
+          GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
           AB_RETH_VERSION: ${{ steps.release.outputs.ab_reth_version }}
-          RETH_IMAGE: ghcr.io/sxz-aa/ab-reth
+          RETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-reth
           AB_LIGHTHOUSE_VERSION: ${{ steps.release.outputs.ab_lighthouse_version }}
-          LIGHTHOUSE_IMAGE_REPOSITORY: ghcr.io/sxz-aa/ab-lighthouse
+          LIGHTHOUSE_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/ab-lighthouse
         run: |
           docker manifest inspect "${GETH_IMAGE}:${AB_GETH_VERSION}" >/dev/null
           docker manifest inspect "${RETH_IMAGE}:${AB_RETH_VERSION}" >/dev/null
@@ -139,7 +139,7 @@ jobs:
         if: steps.release.outputs.promote == 'true'
         env:
           AB_GETH_VERSION: ${{ steps.release.outputs.ab_geth_version }}
-          GETH_IMAGE: ghcr.io/sxz-aa/ab-geth
+          GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
         run: |
           ./scripts/update-geth-latest.sh
 
@@ -147,7 +147,7 @@ jobs:
         if: steps.release.outputs.promote == 'true'
         env:
           AB_RETH_VERSION: ${{ steps.release.outputs.ab_reth_version }}
-          RETH_IMAGE: ghcr.io/sxz-aa/ab-reth
+          RETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-reth
         run: |
           ./scripts/update-reth-latest.sh
 
@@ -155,6 +155,6 @@ jobs:
         if: steps.release.outputs.promote == 'true'
         env:
           AB_LIGHTHOUSE_VERSION: ${{ steps.release.outputs.ab_lighthouse_version }}
-          LIGHTHOUSE_IMAGE_REPOSITORY: ghcr.io/sxz-aa/ab-lighthouse
+          LIGHTHOUSE_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/ab-lighthouse
         run: |
           ./scripts/update-lighthouse-latest.sh

@@ -17,8 +17,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      RETH_IMAGE: ghcr.io/sxz-aa/ab-reth
-      LIGHTHOUSE_IMAGE_REPOSITORY: ghcr.io/sxz-aa/ab-lighthouse
+      RETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-reth
+      LIGHTHOUSE_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/ab-lighthouse
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -177,7 +177,7 @@ jobs:
       - name: Prepare AB Geth release artifacts
         if: steps.release.outputs.kind != 'participation'
         env:
-          GETH_IMAGE: ghcr.io/sxz-aa/ab-geth
+          GETH_IMAGE: ghcr.io/${{ github.repository_owner }}/ab-geth
         run: |
           make prepare-geth-release
 

@@ -158,7 +158,7 @@ $(DEVP2P_ARTIFACT): scripts/prepare-geth-source.sh scripts/build-devp2p.sh docke
 verify-bootnodes: check devp2p
 	DEVP2P_BIN="$(DEVP2P_ARTIFACT)" ./scripts/verify-bootnodes.sh "$(CHAIN)" "$(NETWORK)"
 
-docker: geth-docker lighthouse-docker
+docker: geth-docker reth-docker lighthouse-docker
 
 geth-docker: geth docker/geth/Runtime.Dockerfile scripts/build-geth-docker.sh
 	./scripts/build-geth-docker.sh
