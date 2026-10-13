@@ -2,7 +2,7 @@
   "network_name": "abcore-genesis-test",
   "genesis_fork_version": "0x000001ab",
   "exit_fork_version": "0x030001ab",
-  "genesis_validator_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "genesis_validator_root": "0x5dc318b8a794bc87c2aa2fc2c5c7b3228439a77fd94e6935582d53bb1bf9dd2b",
   "multiplier": 1,
   "divisor": 1000,
   "min_activation_amount": 32000,
