@@ -62,7 +62,7 @@ jobs:
           make client-versions
           found_settings=false
           zero_root="0x0000000000000000000000000000000000000000000000000000000000000000"
-          for settings_path in */*/share/deposit-settings.json; do
+          for settings_path in abcore-genesis-test/testnet/share/deposit-settings.json; do
             [[ -f "${settings_path}" ]] || continue
             settings_root="$(jq -r '.genesis_validator_root // empty' "${settings_path}")"
             [[ "${settings_root}" == "${zero_root}" ]] || continue
@@ -115,7 +115,7 @@ jobs:
             release_phase=release
           fi
           found_network=false
-          for share_dir in */*/share; do
+          for share_dir in abcore-genesis-test/testnet/share; do
             [[ -s "${share_dir}/genesis.json" ]] || continue
             found_network=true
             chain="$(basename "$(dirname "$(dirname "${share_dir}")")")"
